@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+
+# Virtual environments and local secrets
+.env
+.venv/
+venv/
+
+# Editor and OS files
+.DS_Store
+.idea/
+.vscode/
+
+# Training outputs and caches
+.ultralytics/
+runs/
+wandb/
+weights/
+*.log
+*.pt
+*.onnx
+*.engine
+
+# Dataset policy: keep lightweight metadata only
+data/*
+!data/*/
+data/*/train/
+data/*/valid/
+data/*/test/
+data/*/train/**
+data/*/valid/**
+data/*/test/**
+!data/*/data.yaml
+!data/*/README.dataset.txt
