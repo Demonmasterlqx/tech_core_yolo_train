@@ -5,13 +5,19 @@ from __future__ import annotations
 
 import argparse
 import copy
+import faulthandler
 import os
+import signal
 import sys
 from pathlib import Path
 from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parent
-os.environ.setdefault("YOLO_CONFIG_DIR", str((REPO_ROOT / ".ultralytics").resolve()))
+LOCAL_YOLO_CONFIG_ROOT = (REPO_ROOT / ".ultralytics").resolve()
+(LOCAL_YOLO_CONFIG_ROOT / "Ultralytics").mkdir(parents=True, exist_ok=True)
+os.environ.setdefault("YOLO_CONFIG_DIR", str(LOCAL_YOLO_CONFIG_ROOT))
+faulthandler.enable()
+faulthandler.register(signal.SIGUSR1, all_threads=True)
 
 import yaml
 
@@ -302,7 +308,12 @@ def configure_wandb(config: dict[str, Any]):
         "config": sanitize_for_wandb(config),
     }
     init_kwargs = {key: value for key, value in init_kwargs.items() if value not in (None, [], "")}
-    run = wandb.init(**init_kwargs) if not wandb.run else wandb.run
+    try:
+        run = wandb.init(**init_kwargs) if not wandb.run else wandb.run
+    except Exception as exc:
+        SETTINGS.update({"wandb": False})
+        print_info(f"W&B init failed ({exc}). Continuing with local logging only.")
+        return None
     print_info(f"W&B enabled. Run: {run.name}")
     return run
 
