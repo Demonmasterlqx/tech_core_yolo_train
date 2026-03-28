@@ -1,0 +1,55 @@
+model: yolo11s-pose.pt
+data: data/Energy_Core_Position_Estimate.v6i.yolov8/data.yaml
+device: auto
+project: runs/pose
+name: v6_yolo11s_pretrained_precision
+seed: 42
+init_mode: pretrained
+
+train:
+  epochs: 200
+  batch: -1
+  imgsz: 960
+  workers: 8
+  patience: 50
+  save: true
+  save_period: -1
+  cache: ram
+  plots: true
+  exist_ok: false
+  verbose: true
+  optimizer: AdamW
+  lr0: 0.001
+  lrf: 0.01
+  warmup_epochs: 5
+  cos_lr: true
+  pose: 20.0
+
+augment:
+  hsv_h: 0.01
+  hsv_s: 0.4
+  hsv_v: 0.2
+  degrees: 0.0
+  translate: 0.05
+  scale: 0.2
+  shear: 0.0
+  perspective: 0.0
+  flipud: 0.0
+  fliplr: 0.0
+  mosaic: 0.0
+  mixup: 0.0
+  copy_paste: 0.0
+
+wandb:
+  enabled: true
+  project: tech-core-yolo-pose
+  entity: null
+  group: pose-precision-tune
+  tags:
+    - pose
+    - energy-core
+    - tuned
+  notes: >
+    Precision-tuned pose training config for Energy Core Position Estimate.
+    Horizontal flip is disabled because the dataset uses a 33-point custom
+    keypoint layout with an identity flip_idx mapping.

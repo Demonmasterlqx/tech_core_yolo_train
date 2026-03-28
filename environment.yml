@@ -6,6 +6,8 @@ dependencies:
   - python=3.12
   - pip
   - pip:
-      - ultralytics==8.3.202
+      - torch==2.8.0
+      - torchvision==0.23.0
+      - ultralytics==8.4.30
       - wandb
       - pyyaml

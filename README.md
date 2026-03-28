@@ -21,7 +21,7 @@ Create the environment directly:
 
 ```bash
 conda create -n tech_core_yolo python=3.12 pip -y
-conda run -n tech_core_yolo pip install ultralytics==8.3.202 wandb pyyaml
+conda run -n tech_core_yolo pip install torch==2.8.0 torchvision==0.23.0 ultralytics==8.4.30 wandb pyyaml
 ```
 
 Or recreate it from the checked-in file:
@@ -74,18 +74,35 @@ conda run -n tech_core_yolo python train_pose.py \
   --set wandb.group=compare-yolo11-vs-yolo26
 ```
 
-## Future YOLO26 support
+## YOLO26 usage
 
-The script already accepts a generic `--model` input. Once a `yolo26-pose.yaml` or `yolo26-pose.pt` becomes available, you can pass it directly:
+The script accepts a generic `--model` input, so you can train supported YOLO11 and YOLO26 pose checkpoints directly:
 
 ```bash
 conda run -n tech_core_yolo python train_pose.py \
-  --model /path/to/yolo26-pose.yaml \
-  --scratch
+  --model yolo26s-pose.pt \
+  --pretrained
 ```
+
+## Test usage
+
+Run a full test-set evaluation and export rendered predictions:
+
+```bash
+conda run -n tech_core_yolo python test_pose.py \
+  --weights runs/pose/<train_run>/weights/best.pt \
+  --data data/Energy_Core_Position_Estimate.v6i.yolov8/data.yaml \
+  --device auto
+```
+
+This produces two artifact directories under `runs/pose_test/`:
+
+- `<train_run>_test_eval` for quantitative metrics and evaluation plots
+- `<train_run>_test_predict` for rendered test images and YOLO-format prediction labels
 
 ## Common notes
 
 - `device=auto` prefers CUDA when available and otherwise falls back to CPU with a warning.
 - `--scratch` rejects `.pt` checkpoints on purpose to avoid accidentally fine-tuning when you intended to train from scratch.
 - W&B is optional. If login is unavailable, training continues locally.
+- This project forbids `augment.fliplr` and `augment.flipud`. The Energy Core object and its custom keypoint ordering are not flip-invariant, so the training script will raise an error if either flip augmentation is set above `0.0`.

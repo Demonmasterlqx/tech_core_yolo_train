@@ -53,7 +53,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "shear": 0.0,
         "perspective": 0.0,
         "flipud": 0.0,
-        "fliplr": 0.5,
+        "fliplr": 0.0,
         "mosaic": 1.0,
         "mixup": 0.0,
         "copy_paste": 0.0,
@@ -212,7 +212,19 @@ def normalize_config(args: argparse.Namespace) -> dict[str, Any]:
     if init_mode not in {"scratch", "pretrained"}:
         raise ValueError("init_mode must be either 'scratch' or 'pretrained'.")
     config["init_mode"] = init_mode
+    validate_project_augment_rules(config)
     return config
+
+
+def validate_project_augment_rules(config: dict[str, Any]) -> None:
+    augment = config.get("augment", {})
+    for key in ("flipud", "fliplr"):
+        value = float(augment.get(key, 0.0) or 0.0)
+        if value != 0.0:
+            raise ValueError(
+                "Energy Core pose training forbids horizontal/vertical flip augmentation because the object "
+                "and keypoint layout are not flip-invariant. Set augment.flipud=0.0 and augment.fliplr=0.0."
+            )
 
 
 def validate_and_resolve_paths(config: dict[str, Any]) -> tuple[dict[str, Any], Path]:
@@ -235,6 +247,10 @@ def validate_and_resolve_paths(config: dict[str, Any]) -> tuple[dict[str, Any], 
         if not model_path.exists():
             raise FileNotFoundError(f"Local model path does not exist: {model_path}")
         resolved["model"] = str(model_path)
+
+    project_path = resolve_existing_path(str(config["project"]), REPO_ROOT)
+    project_path.mkdir(parents=True, exist_ok=True)
+    resolved["project"] = str(project_path)
 
     if "tags" in resolved["wandb"] and isinstance(resolved["wandb"]["tags"], str):
         resolved["wandb"]["tags"] = [resolved["wandb"]["tags"]]
