@@ -1,0 +1,62 @@
+model: runs/pose/v6_yolo26s_pretrained_precision_fulltrain_ampoff/weights/best.pt
+data: data/Energy_Core_Position_Estimate.v6i.yolov8/data.darkboost.yaml
+device: auto
+project: runs/pose
+name: v6_yolo26s_pretrained_darkboost_v1
+seed: 42
+init_mode: pretrained
+
+train:
+  epochs: 30
+  batch: -1
+  imgsz: 960
+  workers: 8
+  patience: 15
+  save: true
+  save_period: -1
+  cache: ram
+  plots: true
+  exist_ok: false
+  verbose: true
+  optimizer: AdamW
+  lr0: 0.0001
+  lrf: 0.2
+  warmup_epochs: 1
+  cos_lr: true
+  pose: 20.0
+  rle: 1.0
+  angle: 1.0
+  auto_augment: randaugment
+  erasing: 0.4
+  amp: false
+
+augment:
+  hsv_h: 0.01
+  hsv_s: 0.4
+  hsv_v: 0.25
+  degrees: 0.0
+  translate: 0.05
+  scale: 0.2
+  shear: 0.0
+  perspective: 0.0
+  flipud: 0.0
+  fliplr: 0.0
+  mosaic: 0.0
+  mixup: 0.0
+  copy_paste: 0.0
+
+wandb:
+  enabled: true
+  project: tech-core-yolo-pose
+  entity: null
+  group: yolo26-pose-darkboost
+  tags:
+    - pose
+    - energy-core
+    - yolo26
+    - yolo26s
+    - darkboost
+  notes: >
+    Continue from the current YOLO26s best checkpoint while oversampling
+    dark frame-domain training images. Flips remain disabled because the
+    object and keypoint layout are not flip-invariant.

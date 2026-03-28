@@ -1,0 +1,58 @@
+model: yolo26m-pose.pt
+data: data/Energy_Core_Position_Estimate.v6i.yolov8/data.yaml
+device: auto
+project: runs/pose
+name: v6_yolo26m_pretrained_precision_fulltrain_ampoff
+seed: 42
+init_mode: pretrained
+
+train:
+  epochs: 200
+  batch: 4
+  imgsz: 960
+  workers: 8
+  patience: 50
+  save: true
+  save_period: -1
+  cache: ram
+  plots: true
+  exist_ok: false
+  verbose: true
+  optimizer: AdamW
+  lr0: 0.001
+  lrf: 0.01
+  warmup_epochs: 5
+  cos_lr: true
+  pose: 20.0
+  amp: false
+
+augment:
+  hsv_h: 0.01
+  hsv_s: 0.4
+  hsv_v: 0.2
+  degrees: 0.0
+  translate: 0.05
+  scale: 0.2
+  shear: 0.0
+  perspective: 0.0
+  flipud: 0.0
+  fliplr: 0.0
+  mosaic: 0.0
+  mixup: 0.0
+  copy_paste: 0.0
+
+wandb:
+  enabled: true
+  project: tech-core-yolo-pose
+  entity: null
+  group: yolo26-pose-fulltrain
+  tags:
+    - pose
+    - energy-core
+    - yolo26
+    - yolo26m
+    - tuned
+  notes: >
+    Full training config for YOLO26m pose on Energy Core Position Estimate.
+    Horizontal and vertical flips remain disabled because the keypoint layout
+    is not flip-invariant for this object.

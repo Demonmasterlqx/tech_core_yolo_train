@@ -1,0 +1,61 @@
+model: runs/pose/v6_yolo26s_pretrained_precision_fulltrain_ampoff/weights/best.pt
+data: data/Energy_Core_Position_Estimate.v6i.yolov8/data.yaml
+device: auto
+project: runs/pose
+name: v6_yolo26s_pretrained_precision_refine_posefocus
+seed: 42
+init_mode: pretrained
+
+train:
+  epochs: 30
+  batch: -1
+  imgsz: 960
+  workers: 8
+  patience: 15
+  save: true
+  save_period: -1
+  cache: ram
+  plots: true
+  exist_ok: false
+  verbose: true
+  optimizer: AdamW
+  lr0: 0.0002
+  lrf: 0.2
+  warmup_epochs: 1
+  cos_lr: true
+  pose: 30.0
+  rle: 0.0
+  angle: 0.0
+  auto_augment: none
+  erasing: 0.0
+  amp: false
+
+augment:
+  hsv_h: 0.01
+  hsv_s: 0.25
+  hsv_v: 0.15
+  degrees: 0.0
+  translate: 0.03
+  scale: 0.1
+  shear: 0.0
+  perspective: 0.0
+  flipud: 0.0
+  fliplr: 0.0
+  mosaic: 0.0
+  mixup: 0.0
+  copy_paste: 0.0
+
+wandb:
+  enabled: true
+  project: tech-core-yolo-pose
+  entity: null
+  group: yolo26-pose-refine
+  tags:
+    - pose
+    - energy-core
+    - yolo26
+    - refine
+  notes: >
+    Continue fine-tuning YOLO26s from the current best checkpoint with lower
+    learning rate, stronger pose emphasis, and reduced pose-specific
+    regularization/augmentation to improve hard-case keypoint precision.

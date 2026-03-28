@@ -26,13 +26,3 @@ weights/
 
 # Dataset policy: keep lightweight metadata only
 data/*
-!data/*/
-data/*/train/
-data/*/valid/
-data/*/test/
-data/*/train/**
-data/*/valid/**
-data/*/test/**
-!data/*/data.yaml
-!data/*/README.dataset.txt
-data/*/README.roboflow.txt

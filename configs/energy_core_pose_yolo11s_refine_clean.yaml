@@ -1,0 +1,62 @@
+model: runs/pose/v6_yolo11s_pretrained_precision_fulltrain/weights/best.pt
+data: data/Energy_Core_Position_Estimate.v6i.yolov8/data.yaml
+device: auto
+project: runs/pose
+name: v6_yolo11s_pretrained_refine_clean_v1
+seed: 42
+init_mode: pretrained
+
+train:
+  epochs: 30
+  batch: -1
+  imgsz: 960
+  workers: 8
+  patience: 12
+  save: true
+  save_period: -1
+  cache: ram
+  plots: true
+  exist_ok: false
+  verbose: true
+  optimizer: AdamW
+  lr0: 0.00015
+  lrf: 0.2
+  warmup_epochs: 1
+  cos_lr: true
+  pose: 24.0
+  auto_augment: none
+  erasing: 0.0
+  amp: true
+
+augment:
+  hsv_h: 0.008
+  hsv_s: 0.25
+  hsv_v: 0.15
+  degrees: 0.0
+  translate: 0.02
+  scale: 0.10
+  shear: 0.0
+  perspective: 0.0
+  flipud: 0.0
+  fliplr: 0.0
+  mosaic: 0.0
+  mixup: 0.0
+  copy_paste: 0.0
+
+wandb:
+  enabled: true
+  project: tech-core-yolo-pose
+  entity: null
+  group: yolo11-pose-refine
+  tags:
+    - pose
+    - energy-core
+    - yolo11
+    - yolo11s
+    - refine
+    - clean
+  notes: >
+    Fine-tune the current best YOLO11s checkpoint on the original v6 pose
+    dataset with lower learning rate and gentler augmentation to improve
+    keypoint localization without changing the data distribution. Horizontal
+    and vertical flips remain disabled by project constraint.
