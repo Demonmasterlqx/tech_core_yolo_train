@@ -1,0 +1,16 @@
+train: train_weighted_frame_boost_r7.txt
+val: ../valid/images
+test: ../test/images
+
+kpt_shape: [33, 3]
+flip_idx: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32]
+
+nc: 1
+names: ['tech_core_mark']
+
+roboflow:
+  workspace: robomaster-pnx
+  project: energy-core-position-estimate
+  version: 7
+  license: CC BY 4.0
+  url: https://universe.roboflow.com/robomaster-pnx/energy-core-position-estimate/dataset/7

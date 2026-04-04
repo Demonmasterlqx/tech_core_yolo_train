@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import argparse
+import cv2
 import json
+import numpy as np
 import os
 import sys
 from pathlib import Path
@@ -19,6 +21,11 @@ LOCAL_YOLO_CONFIG_ROOT = (REPO_ROOT / ".ultralytics").resolve()
 os.environ.setdefault("YOLO_CONFIG_DIR", str(LOCAL_YOLO_CONFIG_ROOT))
 
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
+KEYPOINT_NAME_CONF_THRES = 0.25
+LABEL_BOX_COLOR = (32, 32, 32)
+LABEL_BORDER_COLOR = (96, 96, 96)
+LABEL_TEXT_COLOR = (255, 255, 255)
+LABEL_CONNECTOR_COLOR = (160, 160, 160)
 
 
 def print_info(message: str) -> None:
@@ -144,6 +151,236 @@ def sanitize_for_dump(value: Any) -> Any:
     return value
 
 
+def build_keypoint_names(data_config: dict[str, Any]) -> list[str]:
+    raw_shape = data_config.get("kpt_shape")
+    if not isinstance(raw_shape, (list, tuple)) or not raw_shape:
+        raise ValueError("Dataset YAML must define kpt_shape as a non-empty list/tuple.")
+    keypoint_count = int(raw_shape[0])
+    return [str(index) for index in range(keypoint_count)]
+
+
+def make_rect(x1: int, y1: int, x2: int, y2: int) -> tuple[int, int, int, int]:
+    return (min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2))
+
+
+def clamp_rect(
+    rect: tuple[int, int, int, int],
+    image_width: int,
+    image_height: int,
+) -> tuple[int, int, int, int]:
+    x1, y1, x2, y2 = rect
+    width = max(1, x2 - x1)
+    height = max(1, y2 - y1)
+    clamped_x1 = min(max(0, x1), max(0, image_width - width))
+    clamped_y1 = min(max(0, y1), max(0, image_height - height))
+    return (clamped_x1, clamped_y1, clamped_x1 + width, clamped_y1 + height)
+
+
+def rect_in_bounds(rect: tuple[int, int, int, int], image_width: int, image_height: int) -> bool:
+    x1, y1, x2, y2 = rect
+    return x1 >= 0 and y1 >= 0 and x2 <= image_width and y2 <= image_height
+
+
+def rect_overlap_area(first: tuple[int, int, int, int], second: tuple[int, int, int, int]) -> int:
+    x1 = max(first[0], second[0])
+    y1 = max(first[1], second[1])
+    x2 = min(first[2], second[2])
+    y2 = min(first[3], second[3])
+    if x2 <= x1 or y2 <= y1:
+        return 0
+    return (x2 - x1) * (y2 - y1)
+
+
+def total_overlap_area(
+    rect: tuple[int, int, int, int],
+    blockers: list[tuple[int, int, int, int]],
+) -> int:
+    return sum(rect_overlap_area(rect, blocker) for blocker in blockers)
+
+
+def expand_rect(rect: tuple[int, int, int, int], padding: int) -> tuple[int, int, int, int]:
+    x1, y1, x2, y2 = rect
+    return (x1 - padding, y1 - padding, x2 + padding, y2 + padding)
+
+
+def build_label_candidates(
+    x: int,
+    y: int,
+    box_width: int,
+    box_height: int,
+    gap: int,
+) -> list[tuple[int, int, int, int]]:
+    return [
+        make_rect(x + gap, y - gap - box_height, x + gap + box_width, y - gap),
+        make_rect(x - gap - box_width, y - gap - box_height, x - gap, y - gap),
+        make_rect(x + gap, y + gap, x + gap + box_width, y + gap + box_height),
+        make_rect(x - gap - box_width, y + gap, x - gap, y + gap + box_height),
+        make_rect(x - box_width // 2, y - gap - box_height, x - box_width // 2 + box_width, y - gap),
+        make_rect(x - box_width // 2, y + gap, x - box_width // 2 + box_width, y + gap + box_height),
+    ]
+
+
+def choose_label_rect(
+    x: int,
+    y: int,
+    box_width: int,
+    box_height: int,
+    image_width: int,
+    image_height: int,
+    blockers: list[tuple[int, int, int, int]],
+    gap: int,
+) -> tuple[int, int, int, int]:
+    candidates = build_label_candidates(x, y, box_width, box_height, gap)
+
+    for candidate in candidates:
+        if rect_in_bounds(candidate, image_width, image_height) and total_overlap_area(candidate, blockers) == 0:
+            return candidate
+
+    best_rect: tuple[int, int, int, int] | None = None
+    best_score: tuple[int, int] | None = None
+    for candidate in candidates:
+        clamped = clamp_rect(candidate, image_width, image_height)
+        overlap = total_overlap_area(clamped, blockers)
+        clamp_penalty = abs(clamped[0] - candidate[0]) + abs(clamped[1] - candidate[1])
+        score = (overlap, clamp_penalty)
+        if best_score is None or score < best_score:
+            best_rect = clamped
+            best_score = score
+
+    if best_rect is None:
+        raise RuntimeError("Failed to choose a keypoint label position.")
+    return best_rect
+
+
+def nearest_point_on_rect(
+    x: int,
+    y: int,
+    rect: tuple[int, int, int, int],
+) -> tuple[int, int]:
+    x1, y1, x2, y2 = rect
+    return (min(max(x, x1), x2), min(max(y, y1), y2))
+
+
+def render_prediction_image(
+    result: Any,
+    keypoint_names: list[str],
+    line_width: int,
+) -> np.ndarray:
+    rendered = result.plot(line_width=line_width, kpt_line=True)
+    image = np.ascontiguousarray(rendered.copy())
+
+    if result.keypoints is None:
+        return image
+
+    keypoints_data = result.keypoints.data.detach().cpu().numpy()
+    if keypoints_data.size == 0:
+        return image
+
+    image_height, image_width = image.shape[:2]
+    font_face = cv2.FONT_HERSHEY_SIMPLEX
+    font_scale = max(0.45, min(image_width, image_height) / 1400.0)
+    font_thickness = max(1, int(round(font_scale * 2)))
+    text_padding = max(2, font_thickness + 1)
+    label_gap = max(10, line_width * 5)
+    exclusion_radius = max(8, line_width * 4)
+
+    visible_points: list[tuple[int, int, str]] = []
+    point_blockers: list[tuple[int, int, int, int]] = []
+    for keypoint_set in keypoints_data:
+        for keypoint_index, keypoint in enumerate(keypoint_set):
+            x_coord = int(round(float(keypoint[0])))
+            y_coord = int(round(float(keypoint[1])))
+            confidence = float(keypoint[2]) if len(keypoint) > 2 else 1.0
+            if confidence < KEYPOINT_NAME_CONF_THRES:
+                continue
+            if x_coord <= 0 or y_coord <= 0 or x_coord >= image_width or y_coord >= image_height:
+                continue
+            name = keypoint_names[keypoint_index] if keypoint_index < len(keypoint_names) else str(keypoint_index)
+            visible_points.append((x_coord, y_coord, name))
+            point_blockers.append(
+                make_rect(
+                    x_coord - exclusion_radius,
+                    y_coord - exclusion_radius,
+                    x_coord + exclusion_radius,
+                    y_coord + exclusion_radius,
+                )
+            )
+
+    occupied_boxes: list[tuple[int, int, int, int]] = []
+    for x_coord, y_coord, name in sorted(visible_points, key=lambda item: (item[1], item[0], item[2])):
+        (text_width, text_height), baseline = cv2.getTextSize(name, font_face, font_scale, font_thickness)
+        box_width = text_width + text_padding * 2
+        box_height = text_height + baseline + text_padding * 2
+        blockers = occupied_boxes + point_blockers
+        rect = choose_label_rect(
+            x=x_coord,
+            y=y_coord,
+            box_width=box_width,
+            box_height=box_height,
+            image_width=image_width,
+            image_height=image_height,
+            blockers=blockers,
+            gap=label_gap,
+        )
+
+        anchor_x, anchor_y = nearest_point_on_rect(x_coord, y_coord, rect)
+        if abs(anchor_x - x_coord) > 2 or abs(anchor_y - y_coord) > 2:
+            cv2.line(
+                image,
+                (x_coord, y_coord),
+                (anchor_x, anchor_y),
+                LABEL_CONNECTOR_COLOR,
+                thickness=max(1, line_width),
+                lineType=cv2.LINE_AA,
+            )
+
+        cv2.rectangle(image, (rect[0], rect[1]), (rect[2], rect[3]), LABEL_BOX_COLOR, thickness=-1, lineType=cv2.LINE_AA)
+        cv2.rectangle(
+            image,
+            (rect[0], rect[1]),
+            (rect[2], rect[3]),
+            LABEL_BORDER_COLOR,
+            thickness=1,
+            lineType=cv2.LINE_AA,
+        )
+        text_origin = (rect[0] + text_padding, rect[1] + text_padding + text_height)
+        cv2.putText(
+            image,
+            name,
+            text_origin,
+            font_face,
+            font_scale,
+            LABEL_TEXT_COLOR,
+            thickness=font_thickness,
+            lineType=cv2.LINE_AA,
+        )
+        occupied_boxes.append(expand_rect(rect, text_padding))
+
+    return image
+
+
+def save_prediction_artifacts(
+    predictions: list[Any],
+    predict_save_dir: Path,
+    keypoint_names: list[str],
+    line_width: int,
+) -> None:
+    labels_dir = predict_save_dir / "labels"
+    labels_dir.mkdir(parents=True, exist_ok=True)
+
+    for result in predictions:
+        image_name = Path(result.path).name
+        image_path = predict_save_dir / image_name
+        label_path = labels_dir / f"{Path(image_name).stem}.txt"
+        if label_path.exists():
+            label_path.unlink()
+        result.save_txt(label_path)
+
+        rendered = render_prediction_image(result, keypoint_names=keypoint_names, line_width=line_width)
+        if not cv2.imwrite(str(image_path), rendered):
+            raise IOError(f"Failed to save rendered prediction image: {image_path}")
+
+
 def run_evaluation(args: argparse.Namespace) -> tuple[Path, Path]:
     weights_path = resolve_existing_path(args.weights, REPO_ROOT)
     if not weights_path.exists():
@@ -156,6 +393,7 @@ def run_evaluation(args: argparse.Namespace) -> tuple[Path, Path]:
     data_config = load_yaml_file(data_path)
     if "kpt_shape" not in data_config:
         raise ValueError(f"Dataset YAML is missing 'kpt_shape': {data_path}")
+    keypoint_names = build_keypoint_names(data_config)
 
     source_path = resolve_split_source(data_config, data_path, args.split)
     project_path = resolve_existing_path(args.project, REPO_ROOT)
@@ -166,6 +404,7 @@ def run_evaluation(args: argparse.Namespace) -> tuple[Path, Path]:
     resolved_device = resolve_device(args.device)
 
     from ultralytics import YOLO
+    from ultralytics.utils.files import increment_path
 
     model = YOLO(str(weights_path))
     if getattr(model, "task", None) != "pose":
@@ -197,22 +436,25 @@ def run_evaluation(args: argparse.Namespace) -> tuple[Path, Path]:
     print_info(f"Saved evaluation metrics to: {eval_save_dir}")
 
     print_info(f"Saving rendered predictions for split='{args.split}' from source={source_path}")
+    predict_save_dir = increment_path(project_path / predict_name, mkdir=True).resolve()
     predictions = model.predict(
         source=str(source_path),
         device=resolved_device,
         project=str(project_path),
-        name=predict_name,
+        name=predict_save_dir.name,
         imgsz=args.imgsz,
         conf=args.conf,
         line_width=args.line_width,
-        save=True,
-        save_txt=True,
+        save=False,
+        save_txt=False,
         verbose=True,
     )
-    if predictions:
-        predict_save_dir = Path(getattr(predictions[0], "save_dir", project_path / predict_name)).resolve()
-    else:
-        predict_save_dir = (project_path / predict_name).resolve()
+    save_prediction_artifacts(
+        predictions=predictions,
+        predict_save_dir=predict_save_dir,
+        keypoint_names=keypoint_names,
+        line_width=args.line_width,
+    )
 
     predict_summary = {
         "weights": str(weights_path),

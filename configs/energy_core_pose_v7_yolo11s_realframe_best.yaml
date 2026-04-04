@@ -1,0 +1,71 @@
+model: runs/pose/v7_yolo11s_pretrained_full_e200/weights/best.pt
+data: data/Energy_Core_Position_Estimate.v7i.yolov8/data.frameboost_r7.yaml
+device: auto
+project: runs/pose
+name: v7_yolo11s_realframe_best
+seed: 42
+init_mode: pretrained
+
+train:
+  epochs: 20
+  batch: -1
+  imgsz: 960
+  workers: 8
+  patience: 10
+  save: true
+  save_period: -1
+  cache: ram
+  plots: true
+  exist_ok: false
+  verbose: true
+  optimizer: AdamW
+  lr0: 0.00015
+  lrf: 0.2
+  warmup_epochs: 1
+  cos_lr: true
+  pose: 24.0
+  amp: false
+  auto_augment: none
+  erasing: 0.0
+
+augment:
+  hsv_h: 0.01
+  hsv_s: 0.25
+  hsv_v: 0.15
+  degrees: 0.0
+  translate: 0.02
+  scale: 0.10
+  shear: 0.0
+  perspective: 0.0
+  flipud: 0.0
+  fliplr: 0.0
+  mosaic: 0.0
+  mixup: 0.0
+  copy_paste: 0.0
+
+wandb:
+  enabled: false
+  project: tech-core-yolo-pose
+  entity: null
+  group: null
+  tags:
+    - pose
+    - energy-core
+    - yolo11s
+    - v7
+    - realframe
+  notes: >
+    Best independent real-frame tuning recipe for YOLO11s on the v7i dataset.
+
+recommended_inference:
+  conf: 0.25
+
+best_checkpoint: runs/pose/v7_yolo11s_realframe_s2_fb7_e20/weights/best.pt
+
+selection_summary:
+  valid_mAP50_95_pose: 0.9910009608971448
+  test_mAP50_95_pose: 0.9808064558658321
+  valid_frame_mean_pred_objects: 1.0
+  valid_frame_mean_norm_kp_err: 0.007186041797021401
+  test_frame_mean_pred_objects: 1.0
+  test_frame_mean_norm_kp_err: 0.008347316966074816
