@@ -1,0 +1,78 @@
+model: /data/home/sim6g/code/tech_core_yolo_train/runs/pose/v8_yolo11s_color_s8_1boost_e12/weights/best.pt
+data: data/Energy_Core_Position_Estimate.v8-add-blue-real-marker.yolov8/data.1boost_r40.yaml
+device: '3'
+project: runs/pose
+name: v8_yolo11s_color_s9_1boost_e500
+seed: 42
+init_mode: pretrained
+preprocess:
+  grayscale: false
+train:
+  epochs: 500
+  batch: 4
+  imgsz: 960
+  workers: 8
+  patience: 80
+  save: true
+  save_period: -1
+  cache: ram
+  plots: true
+  exist_ok: false
+  verbose: true
+  optimizer: AdamW
+  lr0: 1.0e-05
+  lrf: 0.2
+  warmup_epochs: 1
+  cos_lr: true
+  pose: 36.0
+  amp: false
+  auto_augment: none
+  erasing: 0.0
+augment:
+  hsv_h: 0.01
+  hsv_s: 0.04
+  hsv_v: 0.02
+  degrees: 0.0
+  translate: 0.002
+  scale: 0.02
+  shear: 0.0
+  perspective: 0.0
+  flipud: 0.0
+  fliplr: 0.0
+  mosaic: 0.0
+  mixup: 0.0
+  copy_paste: 0.0
+wandb:
+  enabled: true
+  project: tech-core-yolo-pose
+  entity: null
+  group: v8-color-hardcase-s-long
+  batch_log_interval: 20
+  tags:
+  - pose
+  - energy-core
+  - v8
+  - s
+  - color
+  - 1boost
+  - longrun
+  notes: Long-run color continuation from S8 with epochs=500 and early stopping.
+recommended_inference:
+  conf: 0.25
+best_checkpoint: /data/home/sim6g/code/tech_core_yolo_train/runs/pose/v8_yolo11s_color_s9_1boost_e500/weights/best.pt
+selection_summary:
+  accepted: false
+  valid_mAP50_95_pose: 0.9681593350979348
+  test_mAP50_95_pose: 0.9683406449038235
+  valid_real_frame_count: 18
+  valid_real_misses: 0
+  valid_real_mean_pred_objects: 1.0
+  valid_real_max_pred_objects: 1
+  valid_real_mean_norm_kp_err: 0.027307481273788913
+  valid_real_mean_best_iou: 0.9051159413264178
+  test_real_frame_count: 6
+  test_real_misses: 0
+  test_real_mean_pred_objects: 1.1666666666666667
+  test_real_max_pred_objects: 2
+  test_real_mean_norm_kp_err: 0.04754598760439166
+  test_real_mean_best_iou: 0.8074554791369573

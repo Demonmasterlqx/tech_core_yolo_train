@@ -1,0 +1,13 @@
+weights: null
+data: data/Energy_Core_Position_Estimate.v8-add-blue-real-marker.yolov8/data.yaml
+split: test
+device: auto
+project: runs/pose_test
+name: null
+imgsz: 960
+batch: 8
+conf: 0.25
+line_width: 2
+
+preprocess:
+  grayscale: false

@@ -46,20 +46,20 @@ conda run -n tech_core_yolo wandb login "$WANDB_API_KEY"
 
 ## Training usage
 
-Run a scratch training job with the default config:
+Run a scratch training job with the default `v8` config:
 
 ```bash
 conda run -n tech_core_yolo python train_pose.py --scratch
 ```
 
-Run the planned smoke test for the `v6` dataset:
+Run a minimal smoke test for the `v8` dataset:
 
 ```bash
 conda run -n tech_core_yolo python train_pose.py \
   --scratch \
   --model yolo11n-pose.yaml \
-  --data data/Energy_Core_Position_Estimate.v6i.yolov8/data.yaml \
-  --name v6_yolo11n_scratch_smoke \
+  --data data/Energy_Core_Position_Estimate.v8-add-blue-real-marker.yolov8/data.yaml \
+  --name v8_yolo11n_scratch_smoke \
   --set train.epochs=1 \
   --set train.batch=2 \
   --set train.workers=0
@@ -90,9 +90,10 @@ Run a full test-set evaluation and export rendered predictions:
 
 ```bash
 conda run -n tech_core_yolo python test_pose.py \
+  --config test_pose.yaml \
   --weights runs/pose/<train_run>/weights/best.pt \
-  --data data/Energy_Core_Position_Estimate.v6i.yolov8/data.yaml \
-  --device auto
+  --split valid \
+  --grayscale
 ```
 
 This produces two artifact directories under `runs/pose_test/`:
@@ -106,3 +107,14 @@ This produces two artifact directories under `runs/pose_test/`:
 - `--scratch` rejects `.pt` checkpoints on purpose to avoid accidentally fine-tuning when you intended to train from scratch.
 - W&B is optional. If login is unavailable, training continues locally.
 - This project forbids `augment.fliplr` and `augment.flipud`. The Energy Core object and its custom keypoint ordering are not flip-invariant, so the training script will raise an error if either flip augmentation is set above `0.0`.
+- `test_pose.py` now supports both YAML config loading and CLI overrides via `--set key=value`, and accepts `valid` as an alias for the Ultralytics `val` split.
+
+## Fixed v8 plan
+
+Run the fixed grayscale + realboost plan for `YOLO11n` and `YOLO11s`:
+
+```bash
+conda run -n tech_core_yolo python scripts/run_v8_gray_realboost_plan.py
+```
+
+This script rebuilds the `r3/r7` weighted train lists, reuses matching `v8_*gray*` runs when available, trains any missing fixed candidates, scans `conf` on the real subset, and writes the final best-config YAMLs plus the Chinese summary document.

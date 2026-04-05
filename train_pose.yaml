@@ -1,10 +1,13 @@
 model: yolo11n-pose.yaml
-data: data/Energy_Core_Position_Estimate.v6i.yolov8/data.yaml
+data: data/Energy_Core_Position_Estimate.v8-add-blue-real-marker.yolov8/data.yaml
 device: auto
 project: runs/pose
-name: v6_yolo11n_pose
+name: v8_yolo11n_pose
 seed: 42
 init_mode: scratch
+
+preprocess:
+  grayscale: true
 
 train:
   epochs: 100
@@ -39,7 +42,21 @@ wandb:
   project: tech-core-yolo-pose
   entity: null
   group: null
+  batch_log_interval: 50
+  upload_checkpoints: true
+  checkpoint_policy: live
   tags:
     - pose
     - energy-core
   notes: YOLO pose training for Energy Core Position Estimate.
+
+post_eval:
+  enabled: true
+  project: runs/pose_test
+  splits:
+    - valid
+    - test
+  imgsz: 960
+  batch: 8
+  conf: 0.25
+  line_width: 2

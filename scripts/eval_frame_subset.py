@@ -1,29 +1,42 @@
 #!/usr/bin/env python3
-"""Evaluate YOLO pose predictions on frame_* subsets only."""
+"""Evaluate YOLO pose predictions on selected real-image subsets."""
 
 from __future__ import annotations
 
 import argparse
 import json
 import math
+import sys
 from pathlib import Path
 from typing import Any
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from grayscale_preprocess import grayscale_prediction_sources
 import yaml
 
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-
-
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Evaluate pose checkpoints on frame_* subsets only.")
+    parser = argparse.ArgumentParser(description="Evaluate pose checkpoints on selected real-image subsets only.")
     parser.add_argument("--weights", required=True, help="Path to a YOLO pose .pt weights file.")
-    parser.add_argument("--data", default="data/Energy_Core_Position_Estimate.v7i.yolov8/data.yaml", help="Dataset YAML path.")
+    parser.add_argument(
+        "--data",
+        default="data/Energy_Core_Position_Estimate.v8-add-blue-real-marker.yolov8/data.yaml",
+        help="Dataset YAML path.",
+    )
     parser.add_argument("--split", default="valid", help="Dataset split to evaluate, e.g. train/valid/test.")
     parser.add_argument("--device", default="auto", help="Inference device. Use auto, cpu, 0, etc.")
     parser.add_argument("--imgsz", type=int, default=960, help="Inference image size.")
     parser.add_argument("--conf", type=float, default=0.25, help="Prediction confidence threshold.")
-    parser.add_argument("--pattern", default="frame_*.jpg", help="Glob pattern used to select the frame subset.")
+    parser.add_argument(
+        "--patterns",
+        nargs="+",
+        default=["frame_*.jpg", "1_*.jpg", "3_*.jpg"],
+        help="One or more glob patterns used to select the real-image subset.",
+    )
+    parser.add_argument("--grayscale", action="store_true", help="Convert prediction sources to grayscale before inference.")
     parser.add_argument("--output", help="Optional JSON output path.")
     return parser.parse_args()
 
@@ -129,22 +142,23 @@ def summarize_frame_subset(args: argparse.Namespace) -> dict[str, Any]:
     yaml_split = normalize_split(args.split)
     image_dir = resolve_split_source(data_config, data_path, yaml_split)
     label_dir = image_dir.parent / "labels"
-    frame_paths = sorted(image_dir.glob(args.pattern))
+    frame_paths = sorted({path for pattern in args.patterns for path in image_dir.glob(pattern)})
     if not frame_paths:
-        raise FileNotFoundError(f"No files matched pattern '{args.pattern}' in {image_dir}")
+        raise FileNotFoundError(f"No files matched patterns {args.patterns} in {image_dir}")
 
     from ultralytics import YOLO
 
     model = YOLO(str(weights_path))
-    results = model.predict(
-        source=[str(path) for path in frame_paths],
-        device=resolve_device(args.device),
-        imgsz=args.imgsz,
-        conf=args.conf,
-        save=False,
-        save_txt=False,
-        verbose=False,
-    )
+    with grayscale_prediction_sources(frame_paths, args.grayscale) as predict_sources:
+        results = model.predict(
+            source=predict_sources,
+            device=resolve_device(args.device),
+            imgsz=args.imgsz,
+            conf=args.conf,
+            save=False,
+            save_txt=False,
+            verbose=False,
+        )
 
     misses = 0
     total_pred_objects = 0
@@ -198,7 +212,8 @@ def summarize_frame_subset(args: argparse.Namespace) -> dict[str, Any]:
         "data": str(data_path),
         "split": args.split,
         "yaml_split": yaml_split,
-        "pattern": args.pattern,
+        "patterns": args.patterns,
+        "grayscale": args.grayscale,
         "conf": args.conf,
         "frame_count": frame_count,
         "matched": matched,

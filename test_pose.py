@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import cv2
 import json
 import numpy as np
@@ -12,6 +13,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from grayscale_preprocess import collect_image_sources, grayscale_prediction_sources, patch_ultralytics_dataset_grayscale
 import yaml
 
 
@@ -27,6 +29,22 @@ LABEL_BORDER_COLOR = (96, 96, 96)
 LABEL_TEXT_COLOR = (255, 255, 255)
 LABEL_CONNECTOR_COLOR = (160, 160, 160)
 
+DEFAULT_CONFIG: dict[str, Any] = {
+    "weights": None,
+    "data": "data/Energy_Core_Position_Estimate.v8-add-blue-real-marker.yolov8/data.yaml",
+    "split": "test",
+    "device": "auto",
+    "project": "runs/pose_test",
+    "name": None,
+    "imgsz": 960,
+    "batch": 8,
+    "conf": 0.25,
+    "line_width": 2,
+    "preprocess": {
+        "grayscale": False,
+    },
+}
+
 
 def print_info(message: str) -> None:
     print(f"[test_pose] {message}")
@@ -34,20 +52,30 @@ def print_info(message: str) -> None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Evaluate YOLO pose weights and export test-set predictions.")
-    parser.add_argument("--weights", required=True, help="Path to a trained YOLO pose .pt weights file.")
-    parser.add_argument(
-        "--data",
-        default="data/Energy_Core_Position_Estimate.v6i.yolov8/data.yaml",
-        help="Dataset YAML path.",
-    )
-    parser.add_argument("--split", default="test", help="Dataset split to evaluate and predict on.")
-    parser.add_argument("--device", default="auto", help="Inference device. Use auto, cpu, 0, 0,1, etc.")
-    parser.add_argument("--project", default="runs/pose_test", help="Base directory for evaluation artifacts.")
+    parser.add_argument("--config", default="test_pose.yaml", help="Path to the default YAML config file.")
+    parser.add_argument("--weights", help="Path to a trained YOLO pose .pt weights file.")
+    parser.add_argument("--data", help="Dataset YAML path.")
+    parser.add_argument("--split", help="Dataset split to evaluate and predict on.")
+    parser.add_argument("--device", help="Inference device. Use auto, cpu, 0, 0,1, etc.")
+    parser.add_argument("--project", help="Base directory for evaluation artifacts.")
     parser.add_argument("--name", help="Base run name. Defaults to the parent training run name.")
-    parser.add_argument("--imgsz", type=int, default=960, help="Inference image size.")
-    parser.add_argument("--batch", type=int, default=8, help="Validation batch size.")
-    parser.add_argument("--conf", type=float, default=0.25, help="Prediction confidence threshold.")
-    parser.add_argument("--line-width", dest="line_width", type=int, default=2, help="Prediction line width.")
+    parser.add_argument("--imgsz", type=int, help="Inference image size.")
+    parser.add_argument("--batch", type=int, help="Validation batch size.")
+    parser.add_argument("--conf", type=float, help="Prediction confidence threshold.")
+    parser.add_argument("--line-width", dest="line_width", type=int, help="Prediction line width.")
+    parser.add_argument(
+        "--grayscale",
+        action="store_true",
+        help="Force grayscale preprocessing for evaluation and prediction.",
+    )
+    parser.add_argument(
+        "--set",
+        dest="overrides",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help="Override any config field, e.g. --set preprocess.grayscale=true",
+    )
     return parser.parse_args()
 
 
@@ -59,9 +87,34 @@ def load_yaml_file(path: Path) -> dict[str, Any]:
     return content
 
 
-def looks_like_local_path(value: str) -> bool:
-    path = Path(value)
-    return path.is_absolute() or value.startswith(".") or "/" in value or "\\" in value
+def deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    merged = copy.deepcopy(base)
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = deep_merge(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def parse_override(item: str) -> tuple[str, Any]:
+    if "=" not in item:
+        raise ValueError(f"Override must look like key=value: {item}")
+    key, raw_value = item.split("=", 1)
+    key = key.strip()
+    if not key:
+        raise ValueError(f"Override key cannot be empty: {item}")
+    return key, yaml.safe_load(raw_value)
+
+
+def set_nested_value(config: dict[str, Any], dotted_key: str, value: Any) -> None:
+    cursor = config
+    keys = dotted_key.split(".")
+    for key in keys[:-1]:
+        if key not in cursor or not isinstance(cursor[key], dict):
+            cursor[key] = {}
+        cursor = cursor[key]
+    cursor[keys[-1]] = value
 
 
 def resolve_existing_path(raw_value: str, base_dir: Path) -> Path:
@@ -71,6 +124,76 @@ def resolve_existing_path(raw_value: str, base_dir: Path) -> Path:
     if candidate.exists():
         return candidate.resolve()
     return (base_dir / candidate).resolve()
+
+
+def normalize_split_name(split: str) -> str:
+    normalized = split.strip().lower()
+    return "val" if normalized == "valid" else normalized
+
+
+def normalize_config(args: argparse.Namespace) -> dict[str, Any]:
+    config_path = resolve_existing_path(args.config, REPO_ROOT)
+    if not config_path.exists():
+        raise FileNotFoundError(f"Config file does not exist: {config_path}")
+
+    config = deep_merge(DEFAULT_CONFIG, load_yaml_file(config_path))
+
+    for dotted_key, value in (parse_override(item) for item in args.overrides):
+        set_nested_value(config, dotted_key, value)
+
+    for field in ("weights", "data", "split", "device", "project", "name", "imgsz", "batch", "conf", "line_width"):
+        cli_value = getattr(args, field, None)
+        if cli_value is not None:
+            config[field] = cli_value
+
+    if args.grayscale:
+        config.setdefault("preprocess", {})
+        config["preprocess"]["grayscale"] = True
+
+    required_top_level = [
+        "weights",
+        "data",
+        "split",
+        "device",
+        "project",
+        "name",
+        "imgsz",
+        "batch",
+        "conf",
+        "line_width",
+        "preprocess",
+    ]
+    missing = [key for key in required_top_level if key not in config]
+    if missing:
+        raise ValueError(f"Missing required config keys: {missing}")
+    if not isinstance(config["preprocess"], dict):
+        raise ValueError("'preprocess' must be a mapping.")
+    if not config.get("weights"):
+        raise ValueError("Weights must be provided either in the config file or via --weights.")
+    return config
+
+
+def validate_and_resolve_paths(config: dict[str, Any]) -> dict[str, Any]:
+    resolved = copy.deepcopy(config)
+
+    weights_path = resolve_existing_path(str(config["weights"]), REPO_ROOT)
+    if not weights_path.exists():
+        raise FileNotFoundError(f"Weights file does not exist: {weights_path}")
+    resolved["weights"] = str(weights_path)
+
+    data_path = resolve_existing_path(str(config["data"]), REPO_ROOT)
+    if not data_path.exists():
+        raise FileNotFoundError(f"Dataset YAML does not exist: {data_path}")
+    resolved["data"] = str(data_path)
+
+    project_path = resolve_existing_path(str(config["project"]), REPO_ROOT)
+    project_path.mkdir(parents=True, exist_ok=True)
+    resolved["project"] = str(project_path)
+
+    requested_split = str(config["split"])
+    resolved["requested_split"] = requested_split
+    resolved["split"] = normalize_split_name(requested_split)
+    return resolved
 
 
 def resolve_device(device_value: Any) -> str:
@@ -360,7 +483,7 @@ def render_prediction_image(
 
 
 def save_prediction_artifacts(
-    predictions: list[Any],
+    predictions: Any,
     predict_save_dir: Path,
     keypoint_names: list[str],
     line_width: int,
@@ -381,27 +504,22 @@ def save_prediction_artifacts(
             raise IOError(f"Failed to save rendered prediction image: {image_path}")
 
 
-def run_evaluation(args: argparse.Namespace) -> tuple[Path, Path]:
-    weights_path = resolve_existing_path(args.weights, REPO_ROOT)
-    if not weights_path.exists():
-        raise FileNotFoundError(f"Weights file does not exist: {weights_path}")
-
-    data_path = resolve_existing_path(args.data, REPO_ROOT)
-    if not data_path.exists():
-        raise FileNotFoundError(f"Dataset YAML does not exist: {data_path}")
-
+def run_evaluation(config: dict[str, Any]) -> tuple[Path, Path]:
+    weights_path = Path(str(config["weights"]))
+    data_path = Path(str(config["data"]))
     data_config = load_yaml_file(data_path)
     if "kpt_shape" not in data_config:
         raise ValueError(f"Dataset YAML is missing 'kpt_shape': {data_path}")
     keypoint_names = build_keypoint_names(data_config)
 
-    source_path = resolve_split_source(data_config, data_path, args.split)
-    project_path = resolve_existing_path(args.project, REPO_ROOT)
-    project_path.mkdir(parents=True, exist_ok=True)
-    run_name = derive_run_name(weights_path, args.name)
-    eval_name = f"{run_name}_{args.split}_eval"
-    predict_name = f"{run_name}_{args.split}_predict"
-    resolved_device = resolve_device(args.device)
+    requested_split = str(config.get("requested_split", config["split"]))
+    normalized_split = str(config["split"])
+    source_path = resolve_split_source(data_config, data_path, normalized_split)
+    project_path = Path(str(config["project"]))
+    run_name = derive_run_name(weights_path, config.get("name"))
+    eval_name = f"{run_name}_{normalized_split}_eval"
+    predict_name = f"{run_name}_{normalized_split}_predict"
+    resolved_device = resolve_device(config["device"])
 
     from ultralytics import YOLO
     from ultralytics.utils.files import increment_path
@@ -410,24 +528,33 @@ def run_evaluation(args: argparse.Namespace) -> tuple[Path, Path]:
     if getattr(model, "task", None) != "pose":
         raise ValueError(f"Weights must resolve to a pose model, but got task={model.task}")
 
-    print_info(f"Running evaluation on split='{args.split}' with weights={weights_path}")
-    val_results = model.val(
-        data=str(data_path),
-        split=args.split,
-        device=resolved_device,
-        project=str(project_path),
-        name=eval_name,
-        imgsz=args.imgsz,
-        batch=args.batch,
-        plots=True,
-        save_json=False,
-        verbose=True,
+    print_info(
+        f"Running evaluation on requested split='{requested_split}' (normalized to '{normalized_split}') "
+        f"with weights={weights_path}"
     )
+    use_grayscale = bool(config.get("preprocess", {}).get("grayscale", False))
+    if use_grayscale:
+        print_info("Applying grayscale preprocessing during evaluation and prediction.")
+    with patch_ultralytics_dataset_grayscale(use_grayscale):
+        val_results = model.val(
+            data=str(data_path),
+            split=normalized_split,
+            device=resolved_device,
+            project=str(project_path),
+            name=eval_name,
+            imgsz=int(config["imgsz"]),
+            batch=int(config["batch"]),
+            plots=True,
+            save_json=False,
+            verbose=True,
+        )
     eval_save_dir = Path(getattr(val_results, "save_dir", project_path / eval_name)).resolve()
     metrics_summary = {
         "weights": str(weights_path),
         "data": str(data_path),
-        "split": args.split,
+        "requested_split": requested_split,
+        "split": normalized_split,
+        "grayscale": use_grayscale,
         "save_dir": str(eval_save_dir),
         "metrics": sanitize_for_dump(getattr(val_results, "results_dict", {})),
         "speed_ms_per_image": sanitize_for_dump(getattr(val_results, "speed", {})),
@@ -435,30 +562,40 @@ def run_evaluation(args: argparse.Namespace) -> tuple[Path, Path]:
     write_summary(eval_save_dir / "metrics_summary", metrics_summary)
     print_info(f"Saved evaluation metrics to: {eval_save_dir}")
 
-    print_info(f"Saving rendered predictions for split='{args.split}' from source={source_path}")
+    print_info(f"Saving rendered predictions for split='{normalized_split}' from source={source_path}")
     predict_save_dir = increment_path(project_path / predict_name, mkdir=True).resolve()
-    predictions = model.predict(
-        source=str(source_path),
-        device=resolved_device,
-        project=str(project_path),
-        name=predict_save_dir.name,
-        imgsz=args.imgsz,
-        conf=args.conf,
-        line_width=args.line_width,
-        save=False,
-        save_txt=False,
-        verbose=True,
-    )
-    save_prediction_artifacts(
-        predictions=predictions,
-        predict_save_dir=predict_save_dir,
-        keypoint_names=keypoint_names,
-        line_width=args.line_width,
-    )
+    source_files = collect_image_sources(source_path)
+    with grayscale_prediction_sources(source_files, use_grayscale) as predict_sources:
+        total_sources = len(predict_sources)
+        for index, predict_source in enumerate(predict_sources, start=1):
+            predictions = model.predict(
+                source=predict_source,
+                device=resolved_device,
+                project=str(project_path),
+                name=predict_save_dir.name,
+                imgsz=int(config["imgsz"]),
+                batch=1,
+                conf=float(config["conf"]),
+                line_width=int(config["line_width"]),
+                save=False,
+                save_txt=False,
+                verbose=False,
+            )
+            save_prediction_artifacts(
+                predictions=predictions,
+                predict_save_dir=predict_save_dir,
+                keypoint_names=keypoint_names,
+                line_width=int(config["line_width"]),
+            )
+            if index == 1 or index == total_sources or index % 50 == 0:
+                print_info(f"Saved prediction artifacts for {index}/{total_sources} image(s).")
 
     predict_summary = {
         "weights": str(weights_path),
         "source": str(source_path),
+        "requested_split": requested_split,
+        "split": normalized_split,
+        "grayscale": use_grayscale,
         "save_dir": str(predict_save_dir),
         "saved_image_files": count_saved_images(predict_save_dir),
         "saved_label_files": count_saved_labels(predict_save_dir),
@@ -472,7 +609,11 @@ def run_evaluation(args: argparse.Namespace) -> tuple[Path, Path]:
 def main() -> int:
     try:
         args = parse_args()
-        eval_dir, predict_dir = run_evaluation(args)
+        config = normalize_config(args)
+        resolved_config = validate_and_resolve_paths(config)
+        print_info("Resolved evaluation config:")
+        print(yaml.safe_dump(sanitize_for_dump(resolved_config), sort_keys=False))
+        eval_dir, predict_dir = run_evaluation(resolved_config)
         print_info(f"Finished successfully. Eval dir: {eval_dir}")
         print_info(f"Finished successfully. Predict dir: {predict_dir}")
         return 0
