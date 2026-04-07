@@ -6,10 +6,13 @@ from __future__ import annotations
 import argparse
 import copy
 import faulthandler
+import math
 import os
+import random
 import signal
 import subprocess
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -331,6 +334,63 @@ def sanitize_for_wandb(value: Any) -> Any:
     return value
 
 
+def parse_multi_scale_ratio(train_args: dict[str, Any]) -> float | None:
+    raw_value = train_args.get("multi_scale", False)
+    if isinstance(raw_value, bool):
+        return None
+    if raw_value in (None, 0, 0.0):
+        train_args["multi_scale"] = False
+        return None
+    if not isinstance(raw_value, (int, float)):
+        raise ValueError("train.multi_scale must be a bool or a numeric ratio in [0, 1).")
+
+    ratio = float(raw_value)
+    if not (0.0 < ratio < 1.0):
+        raise ValueError("Numeric train.multi_scale must satisfy 0.0 < multi_scale < 1.0.")
+    return ratio
+
+
+@contextmanager
+def patch_ultralytics_multi_scale_ratio(ratio: float | None):
+    if ratio is None:
+        yield
+        return
+
+    import ultralytics.cfg as ultralytics_cfg
+    import torch
+    from ultralytics.models.yolo.detect.train import DetectionTrainer
+    import torch.nn as nn
+
+    original_preprocess_batch = DetectionTrainer.preprocess_batch
+    original_bool_keys = ultralytics_cfg.CFG_BOOL_KEYS
+    if "multi_scale" in ultralytics_cfg.CFG_BOOL_KEYS:
+        ultralytics_cfg.CFG_BOOL_KEYS = frozenset(key for key in ultralytics_cfg.CFG_BOOL_KEYS if key != "multi_scale")
+
+    def patched_preprocess_batch(self, batch: dict) -> dict:
+        for key, value in batch.items():
+            if isinstance(value, torch.Tensor):
+                batch[key] = value.to(self.device, non_blocking=True)
+        batch["img"] = batch["img"].float() / 255
+        if self.args.multi_scale:
+            imgs = batch["img"]
+            min_size = int(self.args.imgsz * (1.0 - ratio))
+            max_size = int(self.args.imgsz * (1.0 + ratio) + self.stride)
+            sz = random.randrange(min_size, max_size) // self.stride * self.stride
+            sf = sz / max(imgs.shape[2:])
+            if sf != 1:
+                ns = [math.ceil(x * sf / self.stride) * self.stride for x in imgs.shape[2:]]
+                imgs = nn.functional.interpolate(imgs, size=ns, mode="bilinear", align_corners=False)
+            batch["img"] = imgs
+        return batch
+
+    DetectionTrainer.preprocess_batch = patched_preprocess_batch
+    try:
+        yield
+    finally:
+        DetectionTrainer.preprocess_batch = original_preprocess_batch
+        ultralytics_cfg.CFG_BOOL_KEYS = original_bool_keys
+
+
 def configure_wandb(config: dict[str, Any]):
     from ultralytics.utils import SETTINGS
 
@@ -528,10 +588,16 @@ def run_training(config: dict[str, Any]) -> Path | None:
     print(yaml.safe_dump(sanitize_for_wandb(config), sort_keys=False))
 
     train_args = build_train_args(config, resolved_device)
+    multi_scale_ratio = parse_multi_scale_ratio(train_args)
     use_grayscale = bool(config.get("preprocess", {}).get("grayscale", False))
     if use_grayscale:
         print_info("Applying grayscale preprocessing during training and validation.")
-    with patch_ultralytics_dataset_grayscale(use_grayscale):
+    if multi_scale_ratio is not None:
+        print_info(
+            f"Applying custom multi-scale ratio={multi_scale_ratio:.3f} "
+            f"(effective range {1.0 - multi_scale_ratio:.2f}x to {1.0 + multi_scale_ratio:.2f}x)."
+        )
+    with patch_ultralytics_dataset_grayscale(use_grayscale), patch_ultralytics_multi_scale_ratio(multi_scale_ratio):
         model.train(**train_args)
 
     trainer = getattr(model, "trainer", None)
