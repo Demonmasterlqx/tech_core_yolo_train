@@ -109,6 +109,27 @@ This produces two artifact directories under `runs/pose_test/`:
 - This project forbids `augment.fliplr` and `augment.flipud`. The Energy Core object and its custom keypoint ordering are not flip-invariant, so the training script will raise an error if either flip augmentation is set above `0.0`.
 - `test_pose.py` now supports both YAML config loading and CLI overrides via `--set key=value`, and accepts `valid` as an alias for the Ultralytics `val` split.
 
+## Experiment Naming
+
+For new experiments created from now on, use the forward-only naming template:
+
+`v{x}_{model_name}_{image_input_mode}_{model_size}{experiment_id}_{feature_or_target_chain}`
+
+Segment meanings:
+
+- `v{x}`: dataset or experiment family version, for example `v8`
+- `model_name`: architecture family, for example `yolo11_pose`
+- `image_input_mode`: image preprocessing mode, for example `gray` or `color`
+- `model_size{experiment_id}`: model size plus experiment serial, for example `s16`, `s17`, `n12`
+- `feature_or_target_chain`: concise suffix describing the training target, data variant, or key feature stack
+
+Examples:
+
+- `v8_yolo11_pose_gray_s16_scalebalance_v2_from_s14_ms025_augmax_e500`
+- `v8_yolo11_pose_gray_s17_scalebalance_v2_from_s12_ms025_augmax_e500`
+
+Historical experiments keep their existing names and are not renamed retroactively.
+
 ## Fixed v8 plan
 
 Run the fixed grayscale + realboost plan for `YOLO11n` and `YOLO11s`:
