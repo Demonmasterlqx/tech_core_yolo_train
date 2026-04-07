@@ -61,9 +61,9 @@ augment:
   copy_paste_mode: flip
 
 wandb:
-  enabled: false
+  enabled: true
   project: tech-core-yolo-pose
-  entity: null
+  entity: 183842220-hkust
   group: yolo11s-scalebalance-v2-scratch
   batch_log_interval: 50
   upload_checkpoints: true
