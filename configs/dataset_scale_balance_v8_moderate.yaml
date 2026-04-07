@@ -1,0 +1,97 @@
+source:
+  root: data/Energy_Core_Position_Estimate.v8-add-blue-real-marker.yolov8
+  data_yaml: data/Energy_Core_Position_Estimate.v8-add-blue-real-marker.yolov8/data.yaml
+  imgsz: 960
+
+output:
+  root: data/Energy_Core_Position_Estimate.v8-add-blue-real-marker.scalebalance_moderate_v2.yolov8
+
+buckets:
+  definitions:
+    S:
+      min: 0
+      max: 64
+    M:
+      min: 64
+      max: 160
+    L:
+      min: 160
+      max: null
+  target_ranges:
+    S:
+      min: 48
+      max: 60
+    M:
+      min: 96
+      max: 144
+    L:
+      min: 160
+      max: 256
+
+targets:
+  train:
+    S: 800
+    M: 1600
+    L: keep
+  valid:
+    S: 160
+    M: 320
+    L: keep
+  test:
+    S: keep
+    M: keep
+    L: keep
+
+strategies:
+  split_bucket_map:
+    train:
+      S: B
+      M: A
+      L: none
+    valid:
+      S: A
+      M: A
+      L: none
+    test:
+      S: none
+      M: none
+      L: none
+  A:
+    enabled: true
+    train_jitter_ratio: 0.02
+    valid_jitter_ratio: 0.0
+    border_mode: reflect101
+  B:
+    enabled: true
+    context_scale_range: [1.4, 1.8]
+    donor_split: train
+    feather_px: 12
+  C:
+    enabled: false
+
+quality:
+  min_bbox_max_side_px: 16
+  min_visible_keypoints: 32
+  preserve_visible_count: true
+  min_mean_nn_px: 2.5
+  bbox_center_in_frame: true
+  require_target_bucket_match: true
+
+backgrounds:
+  donor_exclusion_margin_ratio: 0.1
+  source_reuse_limits:
+    train:
+      max_total_derivatives: 2
+      per_bucket_max: 1
+    valid:
+      max_total_derivatives: 1
+      per_bucket_max: 1
+
+review:
+  per_group: 60
+
+runtime:
+  seed: 52
+  clean_output: true
+  max_attempts_per_source: 3
+  max_donor_attempts: 24

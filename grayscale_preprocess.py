@@ -53,7 +53,26 @@ def patch_ultralytics_dataset_grayscale(enabled: bool) -> Iterator[None]:
 def collect_image_sources(source_path: Path) -> list[Path]:
     """Collect image files from a file or directory source."""
     if source_path.is_file():
-        return [source_path.resolve()]
+        if source_path.suffix.lower() in IMAGE_SUFFIXES:
+            return [source_path.resolve()]
+        if source_path.suffix.lower() == ".txt":
+            image_paths: list[Path] = []
+            for raw_line in source_path.read_text(encoding="utf-8").splitlines():
+                line = raw_line.strip()
+                if not line:
+                    continue
+                candidate = Path(line)
+                if not candidate.is_absolute():
+                    candidate = (source_path.parent / candidate).resolve()
+                else:
+                    candidate = candidate.resolve()
+                if not candidate.is_file() or candidate.suffix.lower() not in IMAGE_SUFFIXES:
+                    raise FileNotFoundError(f"Image list entry is not a valid image file: {candidate}")
+                image_paths.append(candidate)
+            if not image_paths:
+                raise FileNotFoundError(f"Image list is empty: {source_path}")
+            return image_paths
+        raise FileNotFoundError(f"Unsupported prediction source file: {source_path}")
     if source_path.is_dir():
         return sorted(path.resolve() for path in source_path.iterdir() if path.is_file() and path.suffix.lower() in IMAGE_SUFFIXES)
     raise FileNotFoundError(f"Prediction source does not exist: {source_path}")

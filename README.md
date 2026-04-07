@@ -118,3 +118,49 @@ conda run -n tech_core_yolo python scripts/run_v8_gray_realboost_plan.py
 ```
 
 This script rebuilds the `r3/r7` weighted train lists, reuses matching `v8_*gray*` runs when available, trains any missing fixed candidates, scans `conf` on the real subset, and writes the final best-config YAMLs plus the Chinese summary document.
+
+## Scale-balanced pose dataset builder
+
+Build the first moderate scale-balanced derivative of the `v8-add-blue-real-marker` pose dataset:
+
+```bash
+python scripts/build_scale_balanced_pose_dataset.py \
+  --config configs/dataset_scale_balance_v8_moderate.yaml
+```
+
+Preview the planned distribution and feasibility without writing files:
+
+```bash
+python scripts/build_scale_balanced_pose_dataset.py \
+  --config configs/dataset_scale_balance_v8_moderate.yaml \
+  --dry-run
+```
+
+The builder writes a new derived dataset root at:
+
+`data/Energy_Core_Position_Estimate.v8-add-blue-real-marker.scalebalance_moderate_v2.yolov8`
+
+Key outputs inside that directory:
+
+- `train/images`, `valid/images`, `valid_raw/images`, and `test/images`: self-contained localized split directories
+- `data.yaml`: train on `train/images`, validate on `valid/images`, test on `test/images`
+- `data.raw_eval.yaml`: train on `train/images`, but evaluate on `valid_raw/images` and `test/images`
+- `analysis/source_stats.{csv,json}`: raw split statistics at the configured `imgsz`
+- `analysis/generated_stats.{csv,json}`: generated sample metadata and final combined counts
+- `analysis/rejections.csv`: rejected generation attempts and reasons
+- `analysis/review_manifest.csv`: review images exported per generated split/bucket/strategy group
+- `train_balanced.txt`, `valid_balanced.txt`, `valid_raw.txt`, `test_raw.txt`: relative-path audit manifests inside the derived root
+
+Train against the balanced validation split:
+
+```bash
+python train_pose.py \
+  --data data/Energy_Core_Position_Estimate.v8-add-blue-real-marker.scalebalance_moderate_v2.yolov8/data.yaml
+```
+
+Train the same balanced train list while keeping evaluation on raw `valid/test` for direct comparison with older runs:
+
+```bash
+python train_pose.py \
+  --data data/Energy_Core_Position_Estimate.v8-add-blue-real-marker.scalebalance_moderate_v2.yolov8/data.raw_eval.yaml
+```
