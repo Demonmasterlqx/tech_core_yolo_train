@@ -186,6 +186,52 @@ python train_pose.py \
   --data data/Energy_Core_Position_Estimate.v8-add-blue-real-marker.scalebalance_moderate_v2.yolov8/data.raw_eval.yaml
 ```
 
+## Offline pose augmentation builder
+
+Build a self-contained offline-augmented derivative of the `v8-add-blue-real-marker` pose dataset:
+
+```bash
+conda run -n tech_core_yolo python scripts/build_pose_augmented_dataset.py \
+  --config configs/offline_pose_aug_medium.yaml
+```
+
+Preview the augmentation pipeline on a small subset and export review images without writing the full derived dataset:
+
+```bash
+conda run -n tech_core_yolo python scripts/build_pose_augmented_dataset.py \
+  --config configs/offline_pose_aug_medium.yaml \
+  --dry-run \
+  --limit 20 \
+  --visualize
+```
+
+Provided presets:
+
+- `configs/offline_pose_aug_conservative.yaml`
+- `configs/offline_pose_aug_medium.yaml`
+- `configs/offline_pose_aug_aggressive.yaml`
+
+Default medium output root:
+
+`data/Energy_Core_Position_Estimate.v8-add-blue-real-marker.offlineaug_medium_v1.yolov8`
+
+Key outputs inside the derived root:
+
+- `train/images` and `train/labels`: original train samples plus accepted offline augmentations
+- `valid/images`, `valid_raw/images`, and `test/images`: copied raw evaluation splits
+- `analysis/augment_log.{csv,json}`: accepted augmentation records with transform parameters
+- `analysis/rejections.{csv,json}`: rejected augmentation attempts and reasons
+- `analysis/review/**`: rendered bbox/keypoint review images
+- `train_augmented.txt`, `valid_raw.txt`, `test_raw.txt`: relative-path audit manifests
+- `data.yaml` and `data.raw_eval.yaml`: train-ready dataset entrypoints
+
+Train against the derived dataset exactly like any other YOLO pose dataset:
+
+```bash
+conda run -n tech_core_yolo python train_pose.py \
+  --data data/Energy_Core_Position_Estimate.v8-add-blue-real-marker.offlineaug_medium_v1.yolov8/data.raw_eval.yaml
+```
+
 ## Real-Only Dataset
 
 Extract the filename-defined real-domain subset into a standalone dataset:
@@ -207,6 +253,42 @@ Outputs:
 - `data.yaml` with local `train/images`, `valid/images`, `test/images`
 - `analysis/selection_manifest.csv`
 - `analysis/selection_summary.json`
+
+## Repartition Dataset
+
+Repartition a self-contained YOLO pose dataset into a new shuffled `train/valid/test` split:
+
+```bash
+conda run -n tech_core_yolo python scripts/repartition_pose_dataset.py \
+  --dataset-root data/Energy_Core_Position_Estimate.v8-add-blue-real-marker.yolov8 \
+  --train-ratio 0.7 \
+  --valid-ratio 0.2 \
+  --test-ratio 0.1
+```
+
+Preview the planned split counts without writing files:
+
+```bash
+conda run -n tech_core_yolo python scripts/repartition_pose_dataset.py \
+  --dataset-root data/Energy_Core_Position_Estimate.v8-add-blue-real-marker.yolov8 \
+  --train-ratio 0.7 \
+  --valid-ratio 0.2 \
+  --test-ratio 0.1 \
+  --dry-run
+```
+
+Defaults:
+
+- output root:
+  `data/Energy_Core_Position_Estimate.v8-add-blue-real-marker.resplit_v1.yolov8`
+- all source `train/valid/test` samples are combined, shuffled with the provided seed, then repartitioned
+- output filenames are prefixed with the original source split to avoid collisions
+
+Outputs:
+
+- `data.yaml` with local `train/images`, `valid/images`, `test/images`
+- `analysis/repartition_manifest.csv`
+- `analysis/repartition_summary.json`
 
 ## Dataset Merge
 

@@ -1,0 +1,118 @@
+source:
+  root: data/Energy_Core_Position_Estimate.v8-add-blue-real-marker.yolov8
+  data_yaml: data/Energy_Core_Position_Estimate.v8-add-blue-real-marker.yolov8/data.yaml
+
+output:
+  root: data/Energy_Core_Position_Estimate.v8-add-blue-real-marker.offlineaug_conservative_v1.yolov8
+  clean_output: true
+
+runtime:
+  seed: 52
+  num_aug_per_image: 2
+  keep_original_train: true
+  image_suffix: .jpg
+  label_suffix: .txt
+  max_attempts_per_augment: 10
+
+geometry:
+  border_mode: reflect101
+  rotate:
+    enabled: true
+    prob: 0.55
+    range_deg: [-5.0, 5.0]
+  scale:
+    enabled: true
+    prob: 0.55
+    range: [0.94, 1.08]
+  translate:
+    enabled: true
+    prob: 0.55
+    range_ratio: [-0.05, 0.05]
+  perspective:
+    enabled: true
+    prob: 0.08
+    strength_range: [0.005, 0.015]
+  crop:
+    enabled: true
+    prob: 0.05
+    scale_range: [0.94, 0.99]
+    center_jitter_ratio: [1.0, 1.0]
+
+appearance:
+  brightness_contrast:
+    enabled: true
+    prob: 0.7
+    brightness_range: [-16.0, 16.0]
+    contrast_range: [0.92, 1.12]
+  gamma:
+    enabled: true
+    prob: 0.6
+    range: [0.9, 1.12]
+  hsv:
+    enabled: true
+    prob: 0.1
+    hue_range: [-4.0, 4.0]
+    sat_range: [0.92, 1.1]
+    val_range: [0.94, 1.08]
+  blur:
+    enabled: true
+    prob: 0.2
+    kernel_choices: [3]
+  noise:
+    enabled: true
+    prob: 0.25
+    std_range: [1.0, 6.0]
+  jpeg:
+    enabled: true
+    prob: 0.15
+    quality_range: [78, 96]
+  shadow:
+    enabled: true
+    prob: 0.1
+    darkness_range: [0.18, 0.35]
+    major_axis_ratio: [0.18, 0.34]
+    minor_axis_ratio: [0.1, 0.24]
+    blur_kernel_choices: [31, 51]
+
+occlusion:
+  cutout:
+    enabled: true
+    prob: 0.05
+    count_range: [1, 1]
+    size_ratio_range: [0.08, 0.14]
+    fill_mode: mean
+
+filter:
+  min_bbox_area_ratio: 0.0025
+  min_visible_keypoints: 26
+  min_bbox_width_px: 24
+  min_bbox_height_px: 24
+  max_out_of_frame_ratio: 0.35
+
+review:
+  enabled: true
+  per_template: 18
+  export_dir: analysis/review
+
+templates:
+  light:
+    weight: 1.4
+    geometry: [rotate, scale, translate]
+    appearance: [brightness_contrast, gamma, noise, blur]
+    occlusion: []
+  viewpoint:
+    weight: 0.7
+    geometry: [rotate, scale, translate, perspective]
+    appearance: [brightness_contrast]
+    occlusion: []
+  lighting:
+    weight: 0.8
+    geometry: []
+    appearance: [brightness_contrast, gamma, shadow, jpeg]
+    occlusion: []
+  mixed:
+    weight: 0.4
+    geometry: [rotate, scale, translate]
+    appearance: [gamma, blur]
+    occlusion: [cutout]
+
