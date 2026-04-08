@@ -219,6 +219,16 @@ class DatasetBuilder:
         )
 
     def localize_split(self, split: str, target_split: str, manifest: list[Path]) -> None:
+        source_images_dir = self.source_root / split / "images"
+        source_labels_dir = self.source_root / split / "labels"
+        if not source_images_dir.exists() or not source_labels_dir.exists():
+            print_info(
+                "Skip localizing split "
+                f"'{split}' -> '{target_split}' because source directories are missing: "
+                f"{source_images_dir} / {source_labels_dir}"
+            )
+            return
+
         for sample in collect_split_samples(self.source_root, split):
             target_image_path, target_label_path = self.planned_paths(target_split, sample.image_path.name, sample.label_path.name)
             if not self.dry_run:

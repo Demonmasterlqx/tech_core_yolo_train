@@ -1,0 +1,123 @@
+source:
+  root: data/real_20260408T075927Z
+  data_yaml: data/real_20260408T075927Z/dataset.yaml
+
+output:
+  root: data/real_20260408T075927Z.offlineaug_medium_v1.yolov8
+  clean_output: true
+
+runtime:
+  seed: 52
+  num_aug_per_image: 25
+  keep_original_train: true
+  image_suffix: .jpg
+  label_suffix: .txt
+  max_attempts_per_augment: 25
+
+geometry:
+  border_mode: reflect101
+  rotate:
+    enabled: true
+    prob: 0.7
+    range_deg: [-90.0, 90.0]
+  scale:
+    enabled: true
+    prob: 0.7
+    range: [0.5, 1.14]
+  translate:
+    enabled: true
+    prob: 0.7
+    range_ratio: [-0.08, 0.08]
+  perspective:
+    enabled: true
+    prob: 0.22
+    strength_range: [0.01, 0.05]
+  crop:
+    enabled: true
+    prob: 0.25
+    scale_range: [0.5, 0.98]
+    center_jitter_ratio: [1.0, 1.0]
+
+appearance:
+  brightness_contrast:
+    enabled: true
+    prob: 0.8
+    brightness_range: [-24.0, 24.0]
+    contrast_range: [0.88, 1.18]
+  gamma:
+    enabled: true
+    prob: 0.7
+    range: [0.82, 1.18]
+  hsv:
+    enabled: true
+    prob: 0.25
+    hue_range: [-8.0, 8.0]
+    sat_range: [0.85, 1.18]
+    val_range: [0.88, 1.15]
+  blur:
+    enabled: true
+    prob: 0.35
+    kernel_choices: [3, 5]
+  noise:
+    enabled: true
+    prob: 0.45
+    std_range: [2.0, 10.0]
+  jpeg:
+    enabled: true
+    prob: 0.28
+    quality_range: [62, 95]
+  shadow:
+    enabled: true
+    prob: 0.2
+    darkness_range: [0.22, 0.5]
+    major_axis_ratio: [0.18, 0.42]
+    minor_axis_ratio: [0.12, 0.3]
+    blur_kernel_choices: [31, 51, 71]
+
+occlusion:
+  cutout:
+    enabled: true
+    prob: 0.12
+    count_range: [1, 2]
+    size_ratio_range: [0.1, 0.22]
+    fill_mode: mean
+
+filter:
+  min_bbox_area_ratio: 0.002
+  min_visible_keypoints: 24
+  min_bbox_width_px: 20
+  min_bbox_height_px: 20
+  max_out_of_frame_ratio: 0.45
+
+review:
+  enabled: true
+  per_template: 24
+  export_dir: analysis/review
+
+templates:
+  light:
+    weight: 1.0
+    geometry: [rotate, scale, translate]
+    appearance: [brightness_contrast, gamma, noise, blur]
+    occlusion: []
+  viewpoint:
+    weight: 1.0
+    geometry: [rotate, scale, translate, perspective, crop]
+    appearance: [brightness_contrast]
+    occlusion: []
+  lighting:
+    weight: 1.0
+    geometry: []
+    appearance: [brightness_contrast, gamma, shadow, blur, jpeg]
+    occlusion: []
+  occlusion:
+    weight: 0.8
+    geometry: [rotate, translate]
+    appearance: [brightness_contrast, noise]
+    occlusion: [cutout]
+  mixed:
+    weight: 0.9
+    geometry: [rotate, scale, translate, perspective]
+    appearance: [gamma, blur, jpeg]
+    occlusion: [cutout]
+
