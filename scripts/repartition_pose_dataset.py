@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Repartition a self-contained YOLO pose dataset into new train/valid/test splits."""
+"""Repartition a YOLO pose dataset into new train/valid/test splits."""
 
 from __future__ import annotations
 
@@ -16,7 +16,8 @@ from pose_dataset_build_utils import (
     collect_split_samples,
     copy_sample,
     count_split_files,
-    load_dataset_metadata,
+    image_file_map,
+    load_yaml_file,
     print_info,
     resolve_path,
     write_csv_file,
@@ -26,6 +27,7 @@ from pose_dataset_build_utils import (
 
 
 TOOL_NAME = "repartition_pose_dataset"
+LIST_FILE_SPLIT_KEYS = {"train": "train", "valid": "val", "test": "test"}
 
 
 def parse_args() -> argparse.Namespace:
@@ -112,6 +114,106 @@ def ensure_unique_target_names(allocations: dict[str, list[PoseDatasetSample]]) 
             seen.add(key)
 
 
+def dataset_yaml_candidates(dataset_root: Path) -> list[Path]:
+    return [dataset_root / "data.yaml", dataset_root / "dataset.yaml"]
+
+
+def resolve_dataset_yaml_path(dataset_root: Path) -> Path:
+    for candidate in dataset_yaml_candidates(dataset_root):
+        if candidate.exists():
+            return candidate.resolve()
+    raise FileNotFoundError(f"Could not find data.yaml or dataset.yaml under {dataset_root}")
+
+
+def load_dataset_metadata_compat(dataset_root: Path) -> tuple[dict[str, Any], Path]:
+    dataset_yaml_path = resolve_dataset_yaml_path(dataset_root)
+    metadata = load_yaml_file(dataset_yaml_path)
+    required = ("kpt_shape", "nc", "names")
+    missing = [key for key in required if key not in metadata]
+    if missing:
+        raise ValueError(f"Dataset metadata missing keys {missing}: {dataset_yaml_path}")
+    return metadata, dataset_yaml_path
+
+
+def is_directory_dataset(dataset_root: Path) -> bool:
+    return all((dataset_root / split / "images").exists() and (dataset_root / split / "labels").exists() for split in STANDARD_SPLITS)
+
+
+def normalize_source_split(split: str) -> str:
+    normalized = split.strip().lower()
+    if normalized == "val":
+        return "valid"
+    if normalized not in STANDARD_SPLITS:
+        raise ValueError(f"Unsupported split name: {split}")
+    return normalized
+
+
+def resolve_listfile_entries(dataset_yaml_path: Path, split_value: str) -> list[Path]:
+    resolved_value = resolve_path(split_value, dataset_yaml_path.parent)
+    if resolved_value.is_file():
+        return [resolved_value]
+    raise ValueError(
+        f"Only text file split definitions are supported for list-file datasets, got: {split_value} "
+        f"(resolved to {resolved_value})"
+    )
+
+
+def label_path_for_listfile_image(image_path: Path) -> Path:
+    parts = list(image_path.parts)
+    try:
+        image_index = parts.index("images")
+    except ValueError as exc:
+        raise ValueError(f"Image path does not contain an 'images' directory: {image_path}") from exc
+    parts[image_index] = "labels"
+    label_path = Path(*parts).with_suffix(".txt")
+    return label_path.resolve()
+
+
+def collect_listfile_samples(dataset_root: Path, dataset_yaml_path: Path) -> dict[str, list[PoseDatasetSample]]:
+    data_cfg = load_yaml_file(dataset_yaml_path)
+    sample_map: dict[str, PoseDatasetSample] = {}
+    split_samples: dict[str, list[PoseDatasetSample]] = {split: [] for split in STANDARD_SPLITS}
+
+    for target_split, yaml_key in LIST_FILE_SPLIT_KEYS.items():
+        split_value = data_cfg.get(yaml_key)
+        if split_value in (None, ""):
+            continue
+        for split_file in resolve_listfile_entries(dataset_yaml_path, str(split_value)):
+            lines = [line.strip() for line in split_file.read_text(encoding="utf-8").splitlines() if line.strip()]
+            for raw_line in lines:
+                image_path = resolve_path(raw_line, split_file.parent)
+                if not image_path.exists():
+                    raise FileNotFoundError(f"Split entry image does not exist: {image_path}")
+                label_path = label_path_for_listfile_image(image_path)
+                if not label_path.exists():
+                    raise FileNotFoundError(f"Derived label path does not exist: {label_path}")
+                sample_key = str(image_path.resolve())
+                sample = sample_map.get(sample_key)
+                if sample is None:
+                    sample = PoseDatasetSample(
+                        dataset_name=dataset_root.name,
+                        split=target_split,
+                        stem=image_path.stem,
+                        image_path=image_path.resolve(),
+                        label_path=label_path.resolve(),
+                    )
+                    sample_map[sample_key] = sample
+                split_samples[target_split].append(sample)
+    return split_samples
+
+
+def collect_samples_by_split(dataset_root: Path) -> tuple[dict[str, list[PoseDatasetSample]], dict[str, Any], Path, str]:
+    metadata, dataset_yaml_path = load_dataset_metadata_compat(dataset_root)
+    if is_directory_dataset(dataset_root):
+        return (
+            {split: collect_split_samples(dataset_root, split) for split in STANDARD_SPLITS},
+            metadata,
+            dataset_yaml_path,
+            "directory",
+        )
+    return collect_listfile_samples(dataset_root, dataset_yaml_path), metadata, dataset_yaml_path, "listfile"
+
+
 def main() -> int:
     try:
         args = parse_args()
@@ -124,12 +226,12 @@ def main() -> int:
             raise FileExistsError(f"Output dataset root already exists: {output_root}")
 
         ratios = validate_ratios(args.train_ratio, args.valid_ratio, args.test_ratio)
-        metadata = load_dataset_metadata(dataset_root)
+        samples_by_split, metadata, dataset_yaml_path, dataset_mode = collect_samples_by_split(dataset_root)
 
         combined: list[PoseDatasetSample] = []
         source_summary: dict[str, dict[str, int]] = {}
         for split in STANDARD_SPLITS:
-            samples = collect_split_samples(dataset_root, split)
+            samples = list(samples_by_split[split])
             combined.extend(samples)
             source_summary[split] = {
                 "source_images": len(samples),
@@ -181,6 +283,8 @@ def main() -> int:
 
         summary = {
             "source_root": str(dataset_root),
+            "dataset_yaml": str(dataset_yaml_path),
+            "dataset_mode": dataset_mode,
             "output_root": str(output_root),
             "dry_run": bool(args.dry_run),
             "seed": int(args.seed),

@@ -277,6 +277,11 @@ conda run -n tech_core_yolo python scripts/repartition_pose_dataset.py \
   --dry-run
 ```
 
+The repartition tool supports both:
+
+- self-contained `train/valid/test` dataset roots
+- list-file exports shaped like `dataset.yaml + splits/*.txt + images/** + labels/**`
+
 Defaults:
 
 - output root:
@@ -289,6 +294,25 @@ Outputs:
 - `data.yaml` with local `train/images`, `valid/images`, `test/images`
 - `analysis/repartition_manifest.csv`
 - `analysis/repartition_summary.json`
+
+Example for the 2026-04-08 real export:
+
+```bash
+conda run -n tech_core_yolo python scripts/repartition_pose_dataset.py \
+  --dataset-root data/real_20260408T075927Z \
+  --output-root data/real_20260408T075927Z.resplit_rand811_v1.yolov8 \
+  --train-ratio 0.8 \
+  --valid-ratio 0.1 \
+  --test-ratio 0.1 \
+  --seed 52
+```
+
+Train the conservative S14-style transfer recipe on that split:
+
+```bash
+conda run -n tech_core_yolo python train_pose.py \
+  --config configs/energy_core_pose_real_20260408_gray_transfer_from_s14_v1.yaml
+```
 
 ## Dataset Merge
 

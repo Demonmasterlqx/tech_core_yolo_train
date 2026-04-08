@@ -1,0 +1,93 @@
+model: runs/pose/v8_yolo11s_gray_s14_realboostr7_augmax_e500/weights/best.pt
+data: data/real_20260408T075927Z.resplit_rand811_v1.yolov8/data.yaml
+device: auto
+project: runs/pose
+name: real20260408_yolo11_pose_gray_t01_from_s14_smallft_e240
+seed: 52
+init_mode: pretrained
+
+preprocess:
+  grayscale: true
+
+train:
+  epochs: 240
+  batch: 4
+  imgsz: 960
+  workers: 8
+  patience: 40
+  save: true
+  save_period: -1
+  cache: ram
+  plots: true
+  exist_ok: false
+  verbose: true
+  optimizer: AdamW
+  lr0: 4.0e-06
+  lrf: 0.2
+  momentum: 0.937
+  weight_decay: 0.0005
+  warmup_epochs: 1
+  warmup_momentum: 0.8
+  warmup_bias_lr: 0.1
+  box: 7.5
+  cls: 0.5
+  dfl: 1.5
+  pose: 36.0
+  kobj: 1.0
+  cos_lr: true
+  close_mosaic: 10
+  amp: false
+  deterministic: true
+  auto_augment: randaugment
+  erasing: 0.2
+
+augment:
+  hsv_h: 0.02
+  hsv_s: 0.25
+  hsv_v: 0.18
+  degrees: 4.0
+  translate: 0.08
+  scale: 0.22
+  shear: 2.0
+  perspective: 0.0008
+  flipud: 0.0
+  fliplr: 0.0
+  bgr: 0.0
+  mosaic: 0.35
+  mixup: 0.05
+  cutmix: 0.0
+  copy_paste: 0.0
+  copy_paste_mode: flip
+
+wandb:
+  enabled: true
+  project: tech-core-yolo-pose
+  entity: 183842220-hkust
+  group: real20260408-gray-transfer
+  batch_log_interval: 50
+  upload_checkpoints: true
+  checkpoint_policy: live
+  tags:
+    - pose
+    - energy-core
+    - yolo11
+    - yolo11s
+    - gray
+    - real20260408
+    - transfer
+    - from-s14
+    - small-data
+  notes: >
+    Conservative small-data transfer from the S14 gray augmax checkpoint onto
+    the random 8:1:1 repartition of the 2026-04-08 real dataset export.
+
+post_eval:
+  enabled: true
+  project: runs/pose_test
+  splits:
+    - valid
+    - test
+  imgsz: 960
+  batch: 8
+  conf: 0.25
+  line_width: 2
