@@ -185,3 +185,86 @@ Train the same balanced train list while keeping evaluation on raw `valid/test` 
 python train_pose.py \
   --data data/Energy_Core_Position_Estimate.v8-add-blue-real-marker.scalebalance_moderate_v2.yolov8/data.raw_eval.yaml
 ```
+
+## Real-Only Dataset
+
+Extract the filename-defined real-domain subset into a standalone dataset:
+
+```bash
+python scripts/build_real_only_pose_dataset.py \
+  --dataset-root data/Energy_Core_Position_Estimate.v8-add-blue-real-marker.yolov8
+```
+
+Defaults:
+
+- source split scan: `train`, `valid`, `test`
+- real-domain filename patterns: `frame_*.jpg`, `1_*.jpg`, `3_*.jpg`
+- default output root:
+  `data/Energy_Core_Position_Estimate.v8-add-blue-real-marker.realonly_v1.yolov8`
+
+Outputs:
+
+- `data.yaml` with local `train/images`, `valid/images`, `test/images`
+- `analysis/selection_manifest.csv`
+- `analysis/selection_summary.json`
+
+## Dataset Merge
+
+Merge multiple self-contained YOLO pose datasets by per-split sampling ratios:
+
+```bash
+python scripts/merge_pose_datasets.py \
+  --config configs/dataset_merge_example.yaml
+```
+
+Sampling behavior:
+
+- ratios are applied separately to `train`, `valid`, and `test`
+- sample count is `floor(split_count * ratio)` for each input dataset and split
+- sampling is deterministic by `sampling.seed`
+- sampled files are copied into a new standalone dataset
+- copied filenames are prefixed with `<input_name>__`
+
+Example merge config:
+
+```yaml
+output:
+  root: data/Energy_Core_Position_Estimate.merge_example_v1.yolov8
+
+inputs:
+  - name: v7
+    root: data/Energy_Core_Position_Estimate.v7i.yolov8
+    ratios:
+      train: 0.10
+      valid: 0.20
+      test: 0.20
+  - name: v8
+    root: data/Energy_Core_Position_Estimate.v8-add-blue-real-marker.yolov8
+    ratios:
+      train: 0.10
+      valid: 0.20
+      test: 0.20
+
+sampling:
+  seed: 52
+
+merge:
+  rename_mode: prefix_input_name
+
+postprocess:
+  scale_balance:
+    enabled: false
+```
+
+Optional scale-balance postprocessing:
+
+- set `postprocess.scale_balance.enabled=true`
+- add `postprocess.scale_balance.builder_config=<scale-balance builder yaml>`
+- the merge tool will first emit an intermediate merged dataset, then reuse
+  `build_scale_balanced_pose_dataset.py` on top of that merged dataset
+
+Current limitation:
+
+- the optional scale-balance post-step is intended for the current Energy Core
+  single-instance pose datasets that already match on `kpt_shape`, `nc`, and
+  `names`
