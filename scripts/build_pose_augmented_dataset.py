@@ -60,6 +60,21 @@ def require_mapping(name: str, value: Any) -> dict[str, Any]:
     return value
 
 
+def resolve_dataset_yaml_path(source_root: Path, explicit_path: str | None) -> Path:
+    candidates: list[Path] = []
+    if explicit_path:
+        candidates.append(resolve_path(explicit_path))
+    else:
+        candidates.extend((source_root / "data.yaml", source_root / "dataset.yaml"))
+
+    for candidate in candidates:
+        resolved = candidate.resolve()
+        if resolved.exists():
+            return resolved
+    searched = ", ".join(str(path) for path in candidates)
+    raise FileNotFoundError(f"Dataset YAML does not exist. Searched: {searched}")
+
+
 def load_runtime_config(args: argparse.Namespace) -> dict[str, Any]:
     config_path = resolve_path(args.config)
     config = load_yaml_file(config_path)
@@ -96,13 +111,11 @@ def load_runtime_config(args: argparse.Namespace) -> dict[str, Any]:
         runtime_cfg["seed"] = int(args.seed)
 
     source_root = resolve_path(source_cfg["root"])
-    data_yaml = resolve_path(source_cfg.get("data_yaml", source_root / "data.yaml"))
+    data_yaml = resolve_dataset_yaml_path(source_root, source_cfg.get("data_yaml"))
     output_root = resolve_path(output_cfg["root"])
 
     if not source_root.exists():
         raise FileNotFoundError(f"Source dataset root does not exist: {source_root}")
-    if not data_yaml.exists():
-        raise FileNotFoundError(f"Dataset YAML does not exist: {data_yaml}")
 
     source_cfg["root"] = str(source_root)
     source_cfg["data_yaml"] = str(data_yaml)
@@ -151,8 +164,11 @@ class DatasetBuilder:
         self.requested_output_root = Path(config["output"]["root"]).resolve()
         self.output_root = dry_run_output_root(self.requested_output_root) if dry_run else self.requested_output_root
         self.clean_output = bool(config["output"].get("clean_output", True))
+        self.source_dataset_config = load_yaml_file(self.data_yaml_path)
         self.metadata = load_dataset_metadata(self.data_yaml_path)
         self.keypoint_count = int(self.metadata["kpt_shape"][0])
+        self.has_valid_split = self.source_split_enabled("val", "valid")
+        self.has_test_split = self.source_split_enabled("test", "test")
 
         self.keep_original_train = bool(config["runtime"]["keep_original_train"])
         self.num_aug_per_image = int(config["runtime"]["num_aug_per_image"])
@@ -180,6 +196,16 @@ class DatasetBuilder:
         self.total_requested_augmented = 0
         self.processed_train_count = 0
         self.raw_train_total = 0
+
+    def source_split_enabled(self, yaml_key: str, split: str) -> bool:
+        split_value = self.source_dataset_config.get(yaml_key)
+        if split_value is None:
+            return False
+        if isinstance(split_value, str) and split_value.strip().lower() == "none":
+            return False
+        images_dir = self.source_root / split / "images"
+        labels_dir = self.source_root / split / "labels"
+        return images_dir.exists() and labels_dir.exists()
 
     def split_dirs(self, split: str) -> tuple[Path, Path]:
         return self.output_root / split / "images", self.output_root / split / "labels"
@@ -244,9 +270,11 @@ class DatasetBuilder:
                 target_label_path.parent.mkdir(parents=True, exist_ok=True)
 
     def localize_eval_splits(self) -> None:
-        self.localize_split("valid", "valid", self.valid_manifest)
-        self.localize_split("valid", "valid_raw", self.valid_raw_manifest)
-        self.localize_split("test", "test", self.test_manifest)
+        if self.has_valid_split:
+            self.localize_split("valid", "valid", self.valid_manifest)
+            self.localize_split("valid", "valid_raw", self.valid_raw_manifest)
+        if self.has_test_split:
+            self.localize_split("test", "test", self.test_manifest)
 
     def write_generated_sample(self, generated: GeneratedSample) -> None:
         output_image = Path(generated.record.output_image)
@@ -338,14 +366,14 @@ class DatasetBuilder:
         data_yaml = build_dataset_yaml_payload(
             self.metadata,
             train_value="train/images",
-            val_value="valid/images",
-            test_value="test/images",
+            val_value="valid/images" if self.has_valid_split else "none",
+            test_value="test/images" if self.has_test_split else "none",
         )
         raw_eval_yaml = build_dataset_yaml_payload(
             self.metadata,
             train_value="train/images",
-            val_value="valid_raw/images",
-            test_value="test/images",
+            val_value="valid_raw/images" if self.has_valid_split else "none",
+            test_value="test/images" if self.has_test_split else "none",
         )
         write_yaml_file(self.output_root / "data.yaml", data_yaml)
         write_yaml_file(self.output_root / "data.raw_eval.yaml", raw_eval_yaml)

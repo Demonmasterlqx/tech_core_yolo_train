@@ -7,6 +7,8 @@ from typing import Iterable
 import cv2
 import numpy as np
 
+from .structures import BBox
+
 
 BORDER_MODES = {
     "constant": cv2.BORDER_CONSTANT,
@@ -61,6 +63,22 @@ def rotation_about(center_x: float, center_y: float, degrees: float) -> np.ndarr
         ],
         dtype=np.float32,
     )
+
+
+def shear_about(center_x: float, center_y: float, shear_x_deg: float, shear_y_deg: float) -> np.ndarray:
+    shear_x = math.tan(math.radians(shear_x_deg))
+    shear_y = math.tan(math.radians(shear_y_deg))
+    to_origin = translation_matrix(-center_x, -center_y)
+    shear = np.array(
+        [
+            [1.0, shear_x, 0.0],
+            [shear_y, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+        ],
+        dtype=np.float32,
+    )
+    back = translation_matrix(center_x, center_y)
+    return (back @ shear @ to_origin).astype(np.float32)
 
 
 def perspective_matrix(image_width: int, image_height: int, strength: float, rng: random.Random) -> np.ndarray:
@@ -119,6 +137,49 @@ def crop_and_resize_matrix(
     return matrix, meta
 
 
+def bbox_crop_and_resize_matrix(
+    image_width: int,
+    image_height: int,
+    bbox: BBox,
+    crop_scale: float,
+    jitter_x_bbox_ratio: float,
+    jitter_y_bbox_ratio: float,
+    rng: random.Random,
+) -> tuple[np.ndarray, dict[str, float]]:
+    crop_width = max(2.0, image_width * crop_scale)
+    crop_height = max(2.0, image_height * crop_scale)
+    bbox_center_x, bbox_center_y = bbox.center
+    max_shift_x = max(0.0, bbox.width * jitter_x_bbox_ratio)
+    max_shift_y = max(0.0, bbox.height * jitter_y_bbox_ratio)
+    center_x = bbox_center_x + rng.uniform(-max_shift_x, max_shift_x)
+    center_y = bbox_center_y + rng.uniform(-max_shift_y, max_shift_y)
+    center_x = min(max(crop_width / 2.0, center_x), image_width - crop_width / 2.0)
+    center_y = min(max(crop_height / 2.0, center_y), image_height - crop_height / 2.0)
+    crop_x1 = min(max(0.0, center_x - crop_width / 2.0), image_width - crop_width)
+    crop_y1 = min(max(0.0, center_y - crop_height / 2.0), image_height - crop_height)
+
+    scale_x = image_width / crop_width
+    scale_y = image_height / crop_height
+    matrix = np.array(
+        [
+            [scale_x, 0.0, -crop_x1 * scale_x],
+            [0.0, scale_y, -crop_y1 * scale_y],
+            [0.0, 0.0, 1.0],
+        ],
+        dtype=np.float32,
+    )
+    meta = {
+        "bbox_crop_scale": crop_scale,
+        "bbox_crop_x1": crop_x1,
+        "bbox_crop_y1": crop_y1,
+        "bbox_crop_width": crop_width,
+        "bbox_crop_height": crop_height,
+        "bbox_crop_center_x": center_x,
+        "bbox_crop_center_y": center_y,
+    }
+    return matrix, meta
+
+
 def warp_image_and_mask(
     image: np.ndarray,
     matrix: np.ndarray,
@@ -155,4 +216,3 @@ def transform_xy(matrix: np.ndarray, x_coord: float, y_coord: float) -> tuple[fl
     if transformed[2] == 0.0:
         raise ValueError("Encountered zero homogeneous coordinate during point transform.")
     return float(transformed[0] / transformed[2]), float(transformed[1] / transformed[2])
-

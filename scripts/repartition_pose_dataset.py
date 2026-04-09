@@ -135,8 +135,12 @@ def load_dataset_metadata_compat(dataset_root: Path) -> tuple[dict[str, Any], Pa
     return metadata, dataset_yaml_path
 
 
+def has_directory_split(dataset_root: Path, split: str) -> bool:
+    return (dataset_root / split / "images").exists() and (dataset_root / split / "labels").exists()
+
+
 def is_directory_dataset(dataset_root: Path) -> bool:
-    return all((dataset_root / split / "images").exists() and (dataset_root / split / "labels").exists() for split in STANDARD_SPLITS)
+    return any(has_directory_split(dataset_root, split) for split in STANDARD_SPLITS)
 
 
 def normalize_source_split(split: str) -> str:
@@ -206,7 +210,7 @@ def collect_samples_by_split(dataset_root: Path) -> tuple[dict[str, list[PoseDat
     metadata, dataset_yaml_path = load_dataset_metadata_compat(dataset_root)
     if is_directory_dataset(dataset_root):
         return (
-            {split: collect_split_samples(dataset_root, split) for split in STANDARD_SPLITS},
+            {split: collect_split_samples(dataset_root, split) if has_directory_split(dataset_root, split) else [] for split in STANDARD_SPLITS},
             metadata,
             dataset_yaml_path,
             "directory",

@@ -4,6 +4,13 @@ import cv2
 import numpy as np
 
 
+def normalize_kernel_size(kernel_size: int) -> int:
+    kernel_size = max(1, int(kernel_size))
+    if kernel_size % 2 == 0:
+        kernel_size += 1
+    return kernel_size
+
+
 def adjust_brightness_contrast(image: np.ndarray, brightness: float, contrast: float) -> np.ndarray:
     adjusted = image.astype(np.float32) * contrast + brightness
     return np.clip(adjusted, 0, 255).astype(np.uint8)
@@ -25,12 +32,27 @@ def adjust_hsv(image: np.ndarray, hue_delta: float, sat_scale: float, val_scale:
 
 
 def gaussian_blur(image: np.ndarray, kernel_size: int) -> np.ndarray:
-    kernel_size = max(1, int(kernel_size))
-    if kernel_size % 2 == 0:
-        kernel_size += 1
+    kernel_size = normalize_kernel_size(kernel_size)
     if kernel_size <= 1:
         return image.copy()
     return cv2.GaussianBlur(image, (kernel_size, kernel_size), sigmaX=0.0)
+
+
+def motion_blur(image: np.ndarray, kernel_size: int, angle_deg: float) -> np.ndarray:
+    kernel_size = normalize_kernel_size(kernel_size)
+    if kernel_size <= 1:
+        return image.copy()
+
+    kernel = np.zeros((kernel_size, kernel_size), dtype=np.float32)
+    kernel[kernel_size // 2, :] = 1.0
+    center = ((kernel_size - 1) / 2.0, (kernel_size - 1) / 2.0)
+    rotation = cv2.getRotationMatrix2D(center, angle_deg, 1.0)
+    kernel = cv2.warpAffine(kernel, rotation, (kernel_size, kernel_size))
+    kernel_sum = float(kernel.sum())
+    if kernel_sum <= 0.0:
+        return image.copy()
+    kernel /= kernel_sum
+    return cv2.filter2D(image, ddepth=-1, kernel=kernel, borderType=cv2.BORDER_REFLECT_101)
 
 
 def add_gaussian_noise(image: np.ndarray, std: float, rng: np.random.Generator) -> np.ndarray:
@@ -50,6 +72,48 @@ def jpeg_compress(image: np.ndarray, quality: int) -> np.ndarray:
     if decoded is None:
         raise RuntimeError("Failed to decode JPEG during compression augmentation.")
     return decoded
+
+
+def apply_clahe(image: np.ndarray, clip_limit: float, tile_grid_size: int) -> np.ndarray:
+    tile_grid_size = max(1, int(tile_grid_size))
+    lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
+    l_channel, a_channel, b_channel = cv2.split(lab)
+    clahe = cv2.createCLAHE(clipLimit=max(0.1, float(clip_limit)), tileGridSize=(tile_grid_size, tile_grid_size))
+    l_channel = clahe.apply(l_channel)
+    merged = cv2.merge((l_channel, a_channel, b_channel))
+    return cv2.cvtColor(merged, cv2.COLOR_LAB2BGR)
+
+
+def apply_channel_gain(image: np.ndarray, gains: tuple[float, float, float]) -> np.ndarray:
+    adjusted = image.astype(np.float32).copy()
+    for channel_index, gain in enumerate(gains):
+        adjusted[..., channel_index] *= float(gain)
+    return np.clip(adjusted, 0, 255).astype(np.uint8)
+
+
+def apply_rgb_shift(image: np.ndarray, shifts: tuple[float, float, float]) -> np.ndarray:
+    shifted = image.astype(np.float32).copy()
+    for channel_index, shift in enumerate(shifts):
+        shifted[..., channel_index] += float(shift)
+    return np.clip(shifted, 0, 255).astype(np.uint8)
+
+
+def apply_dominant_channel(
+    image: np.ndarray,
+    dominant_index: int,
+    dominant_gain: float,
+    other_gain: float,
+    bias: float,
+) -> np.ndarray:
+    adjusted = image.astype(np.float32).copy()
+    for channel_index in range(3):
+        gain = dominant_gain if channel_index == int(dominant_index) else other_gain
+        adjusted[..., channel_index] = adjusted[..., channel_index] * float(gain) + float(bias)
+    return np.clip(adjusted, 0, 255).astype(np.uint8)
+
+
+def apply_channel_shuffle(image: np.ndarray, order: tuple[int, int, int]) -> np.ndarray:
+    return image[..., list(order)].copy()
 
 
 def apply_shadow(
@@ -72,13 +136,10 @@ def apply_shadow(
         thickness=-1,
         lineType=cv2.LINE_AA,
     )
-    blur_kernel = max(1, int(blur_kernel))
-    if blur_kernel % 2 == 0:
-        blur_kernel += 1
+    blur_kernel = normalize_kernel_size(blur_kernel)
     if blur_kernel > 1:
         mask = cv2.GaussianBlur(mask, (blur_kernel, blur_kernel), sigmaX=0.0)
     alpha = (mask.astype(np.float32) / 255.0) * np.clip(darkness, 0.0, 1.0)
     shadow = image.astype(np.float32)
     shadow *= 1.0 - alpha[..., None]
     return np.clip(shadow, 0, 255).astype(np.uint8)
-

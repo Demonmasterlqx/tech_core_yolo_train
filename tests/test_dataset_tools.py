@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import random
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -13,12 +15,33 @@ if str(SCRIPTS_ROOT) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_ROOT))
 
 from pose_offline_aug.io import object_annotation_to_yolo_pose_line
+from pose_offline_aug import appearance, geometry, occlusion
 from pose_offline_aug.labels import transform_keypoints
+from pose_offline_aug.object_scale import (
+    apply_same_image_object_scale,
+    padded_bbox_rect,
+    rects_overlap,
+    select_same_image_background_patch,
+)
 from pose_offline_aug.structures import BBox, Keypoint, ObjectAnnotation, OcclusionRegion
+from pose_offline_aug.validator import validate_augmented_sample
+from build_pose_augmented_dataset import DatasetBuilder
+from pose_dataset_build_utils import load_yaml_file
 from repartition_pose_dataset import ensure_unique_target_names, largest_remainder_counts
 
 
 class OfflineAugTests(unittest.TestCase):
+    def make_annotation(self, visible_keypoints: int, total_keypoints: int = 33) -> ObjectAnnotation:
+        keypoints = [
+            Keypoint(x=8.0 + index, y=8.0 + index, v=2 if index < visible_keypoints else 0)
+            for index in range(total_keypoints)
+        ]
+        return ObjectAnnotation(
+            class_id=0,
+            bbox=BBox(x1=4.0, y1=4.0, x2=28.0, y2=28.0),
+            keypoints=keypoints,
+        )
+
     def test_out_of_frame_keypoints_are_dropped_not_clipped(self) -> None:
         keypoints = [Keypoint(x=10.0, y=10.0, v=2)]
         matrix = np.array(
@@ -69,6 +92,289 @@ class OfflineAugTests(unittest.TestCase):
         self.assertEqual(parts[5], "0")
         self.assertEqual(parts[6], "0")
         self.assertEqual(parts[7], "0")
+
+    def test_bbox_crop_is_centered_on_bbox(self) -> None:
+        bbox = BBox(x1=55.0, y1=45.0, x2=75.0, y2=65.0)
+        matrix, _ = geometry.bbox_crop_and_resize_matrix(
+            image_width=100,
+            image_height=100,
+            bbox=bbox,
+            crop_scale=0.5,
+            jitter_x_bbox_ratio=0.0,
+            jitter_y_bbox_ratio=0.0,
+            rng=random.Random(0),
+        )
+        center_x, center_y = geometry.transform_xy(matrix, *bbox.center)
+        self.assertAlmostEqual(center_x, 50.0, places=4)
+        self.assertAlmostEqual(center_y, 50.0, places=4)
+
+    def test_new_appearance_ops_work(self) -> None:
+        sparse = np.zeros((9, 9, 3), dtype=np.uint8)
+        sparse[4, 4] = np.array([255, 255, 255], dtype=np.uint8)
+        motion = appearance.motion_blur(sparse, kernel_size=5, angle_deg=0.0)
+        self.assertEqual(motion.shape, sparse.shape)
+        self.assertLess(int(motion[4, 4, 0]), 255)
+        self.assertGreater(int(motion[4, 2, 0]), 0)
+
+        flat = np.full((8, 8, 3), 120, dtype=np.uint8)
+        clahe = appearance.apply_clahe(flat, clip_limit=2.0, tile_grid_size=8)
+        self.assertEqual(clahe.shape, flat.shape)
+        self.assertEqual(clahe.dtype, np.uint8)
+
+        gained = appearance.apply_channel_gain(
+            np.array([[[10, 20, 30]]], dtype=np.uint8),
+            gains=(2.0, 0.5, 1.0),
+        )
+        self.assertEqual(gained.tolist(), [[[20, 10, 30]]])
+
+        shifted = appearance.apply_rgb_shift(
+            np.array([[[10, 20, 30]]], dtype=np.uint8),
+            shifts=(5.0, -10.0, 20.0),
+        )
+        self.assertEqual(shifted.tolist(), [[[15, 10, 50]]])
+
+        dominant = appearance.apply_dominant_channel(
+            np.array([[[40, 40, 40]]], dtype=np.uint8),
+            dominant_index=2,
+            dominant_gain=2.0,
+            other_gain=0.5,
+            bias=0.0,
+        )
+        self.assertEqual(dominant.tolist(), [[[20, 20, 80]]])
+
+        shuffled = appearance.apply_channel_shuffle(
+            np.array([[[1, 2, 3]]], dtype=np.uint8),
+            order=(2, 0, 1),
+        )
+        self.assertEqual(shuffled.tolist(), [[[3, 1, 2]]])
+
+    def test_new_occlusion_ops_work(self) -> None:
+        bbox = BBox(x1=20.0, y1=20.0, x2=60.0, y2=60.0)
+        edge_regions = occlusion.sample_edge_cutout_regions(
+            bbox,
+            image_width=80,
+            image_height=80,
+            count_range=(1, 1),
+            thickness_ratio_range=(0.1, 0.1),
+            length_ratio_range=(0.5, 0.5),
+            rng=random.Random(1),
+        )
+        self.assertEqual(len(edge_regions), 1)
+        self.assertEqual(edge_regions[0].kind, "edge_cutout")
+        self.assertTrue(
+            edge_regions[0].x1 == bbox.x1
+            or edge_regions[0].x2 == bbox.x2
+            or edge_regions[0].y1 == bbox.y1
+            or edge_regions[0].y2 == bbox.y2
+        )
+
+        corner_regions = occlusion.sample_corner_cutout_regions(
+            bbox,
+            image_width=80,
+            image_height=80,
+            size_ratio_range=(0.2, 0.2),
+            rng=random.Random(2),
+        )
+        self.assertEqual(len(corner_regions), 1)
+        self.assertEqual(corner_regions[0].kind, "corner_cutout")
+
+        gradient = np.arange(16 * 16 * 3, dtype=np.uint8).reshape(16, 16, 3)
+        filled = occlusion.apply_cutout(
+            gradient,
+            [OcclusionRegion(x1=2.0, y1=2.0, x2=6.0, y2=6.0)],
+            fill_mode="local_patch",
+            rng=random.Random(3),
+        )
+        self.assertEqual(filled.shape, gradient.shape)
+        self.assertEqual(filled.dtype, gradient.dtype)
+
+    def test_same_image_background_patch_excludes_padded_bbox(self) -> None:
+        image = np.arange(128 * 128 * 3, dtype=np.uint8).reshape(128, 128, 3)
+        bbox = BBox(x1=44.0, y1=44.0, x2=84.0, y2=84.0)
+        result = select_same_image_background_patch(
+            image,
+            bbox,
+            exclusion_margin_ratio=0.15,
+            rng=random.Random(4),
+        )
+        self.assertIsNotNone(result)
+        patch, rect = result or (None, None)
+        self.assertEqual(patch.shape, image.shape)
+        padded_rect = padded_bbox_rect(bbox, exclusion_margin_ratio=0.15, image_width=128, image_height=128)
+        self.assertFalse(rects_overlap(rect, padded_rect))
+
+    def test_object_scale_can_zoom_out_and_zoom_in(self) -> None:
+        image = np.zeros((128, 128, 3), dtype=np.uint8)
+        image[..., 0] = np.arange(128, dtype=np.uint8)[None, :]
+        image[..., 1] = np.arange(128, dtype=np.uint8)[:, None]
+        annotation = ObjectAnnotation(
+            class_id=0,
+            bbox=BBox(x1=44.0, y1=44.0, x2=84.0, y2=84.0),
+            keypoints=[Keypoint(x=54.0, y=54.0, v=2), Keypoint(x=74.0, y=74.0, v=2)],
+        )
+        base_cfg = {
+            "context_scale_range": [1.2, 1.2],
+            "center_jitter_ratio": 0.0,
+            "exclusion_margin_ratio": 0.15,
+            "feather_px": 8,
+            "min_source_context_px": 32,
+        }
+        zoom_out_image, zoom_out_annotation, zoom_out_meta = apply_same_image_object_scale(
+            image,
+            annotation,
+            base_cfg | {"resize_scale_range": [0.75, 0.75]},
+            random.Random(5),
+        )
+        zoom_in_image, zoom_in_annotation, zoom_in_meta = apply_same_image_object_scale(
+            image,
+            annotation,
+            base_cfg | {"resize_scale_range": [1.25, 1.25]},
+            random.Random(6),
+        )
+
+        self.assertEqual(zoom_out_image.shape, image.shape)
+        self.assertEqual(zoom_in_image.shape, image.shape)
+        self.assertLess(zoom_out_annotation.bbox.width, annotation.bbox.width)
+        self.assertLess(zoom_out_annotation.bbox.height, annotation.bbox.height)
+        self.assertGreater(zoom_in_annotation.bbox.width, annotation.bbox.width)
+        self.assertGreater(zoom_in_annotation.bbox.height, annotation.bbox.height)
+        self.assertTrue(all(keypoint.v == 2 for keypoint in zoom_out_annotation.keypoints))
+        self.assertTrue(all(keypoint.v == 2 for keypoint in zoom_in_annotation.keypoints))
+        self.assertTrue(all(0.0 <= keypoint.x < 128.0 and 0.0 <= keypoint.y < 128.0 for keypoint in zoom_out_annotation.keypoints))
+        self.assertTrue(all(0.0 <= keypoint.x < 128.0 and 0.0 <= keypoint.y < 128.0 for keypoint in zoom_in_annotation.keypoints))
+        self.assertTrue(zoom_out_meta["object_scale_applied"])
+        self.assertTrue(zoom_in_meta["object_scale_applied"])
+
+    def test_visible_keypoint_threshold_uses_ratio_and_floor(self) -> None:
+        filter_cfg = {
+            "min_bbox_area_ratio": 0.0,
+            "min_bbox_width_px": 1,
+            "min_bbox_height_px": 1,
+            "max_out_of_frame_ratio": 0.45,
+        }
+        rejected_metrics, rejected_reason = validate_augmented_sample(
+            self.make_annotation(visible_keypoints=17),
+            BBox(x1=4.0, y1=4.0, x2=28.0, y2=28.0),
+            image_width=32,
+            image_height=32,
+            source_visible_keypoints=20,
+            filter_cfg=filter_cfg,
+        )
+        self.assertEqual(rejected_metrics.visible_keypoints, 17)
+        self.assertEqual(rejected_reason, "visible_keypoints_below_threshold")
+
+        accepted_metrics, accepted_reason = validate_augmented_sample(
+            self.make_annotation(visible_keypoints=18),
+            BBox(x1=4.0, y1=4.0, x2=28.0, y2=28.0),
+            image_width=32,
+            image_height=32,
+            source_visible_keypoints=20,
+            filter_cfg=filter_cfg,
+        )
+        self.assertEqual(accepted_metrics.visible_keypoints, 18)
+        self.assertIsNone(accepted_reason)
+
+    def test_aggressive_geometry_uses_stricter_out_of_frame_cap(self) -> None:
+        annotation = self.make_annotation(visible_keypoints=20)
+        raw_bbox = BBox(x1=-4.0, y1=4.0, x2=6.0, y2=14.0)
+        clipped_annotation = ObjectAnnotation(
+            class_id=annotation.class_id,
+            bbox=BBox(x1=0.0, y1=4.0, x2=6.0, y2=14.0),
+            keypoints=annotation.keypoints,
+        )
+        filter_cfg = {
+            "min_bbox_area_ratio": 0.0,
+            "min_bbox_width_px": 1,
+            "min_bbox_height_px": 1,
+            "max_out_of_frame_ratio": 0.45,
+            "max_out_of_frame_ratio_aggressive": 0.35,
+        }
+        _, relaxed_reason = validate_augmented_sample(
+            clipped_annotation,
+            raw_bbox,
+            image_width=32,
+            image_height=32,
+            source_visible_keypoints=20,
+            filter_cfg=filter_cfg,
+            aggressive_geometry_used=False,
+        )
+        _, aggressive_reason = validate_augmented_sample(
+            clipped_annotation,
+            raw_bbox,
+            image_width=32,
+            image_height=32,
+            source_visible_keypoints=20,
+            filter_cfg=filter_cfg,
+            aggressive_geometry_used=True,
+        )
+        self.assertIsNone(relaxed_reason)
+        self.assertEqual(aggressive_reason, "bbox_out_of_frame_ratio_too_high")
+
+    def test_train_only_sources_write_none_eval_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            source_root = root / "source"
+            (source_root / "train" / "images").mkdir(parents=True)
+            (source_root / "train" / "labels").mkdir(parents=True)
+            (source_root / "dataset.yaml").write_text(
+                "\n".join(
+                    [
+                        "train: train",
+                        "val: none",
+                        "test: none",
+                        "nc: 1",
+                        "names:",
+                        "- tech_core_mark",
+                        "kpt_shape:",
+                        "- 33",
+                        "- 3",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            config = {
+                "source": {
+                    "root": str(source_root),
+                    "data_yaml": str(source_root / "dataset.yaml"),
+                },
+                "output": {
+                    "root": str(root / "out"),
+                    "clean_output": True,
+                },
+                "runtime": {
+                    "seed": 52,
+                    "num_aug_per_image": 1,
+                    "keep_original_train": True,
+                    "image_suffix": ".jpg",
+                    "label_suffix": ".txt",
+                    "max_attempts_per_augment": 1,
+                },
+                "geometry": {"border_mode": "reflect101"},
+                "appearance": {},
+                "occlusion": {},
+                "filter": {
+                    "min_bbox_area_ratio": 0.0,
+                    "min_bbox_width_px": 1,
+                    "min_bbox_height_px": 1,
+                    "max_out_of_frame_ratio": 0.45,
+                },
+                "review": {
+                    "enabled": False,
+                    "per_template": 1,
+                    "export_dir": "analysis/review",
+                },
+                "templates": {},
+            }
+            builder = DatasetBuilder(config, dry_run=False, limit=None, visualize=False)
+            builder.write_dataset_yamls()
+
+            written = load_yaml_file(root / "out" / "data.yaml")
+            raw_eval = load_yaml_file(root / "out" / "data.raw_eval.yaml")
+            self.assertEqual(written["val"], "none")
+            self.assertEqual(written["test"], "none")
+            self.assertEqual(raw_eval["val"], "none")
+            self.assertEqual(raw_eval["test"], "none")
 
 
 class RepartitionTests(unittest.TestCase):

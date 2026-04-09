@@ -1,0 +1,205 @@
+source:
+  root: data/Energy_Core_Position_Estimate.v8p05_plus_real20260408_trainmix_realval_v1.yolov8
+  data_yaml: data/Energy_Core_Position_Estimate.v8p05_plus_real20260408_trainmix_realval_v1.yolov8/data.yaml
+
+output:
+  root: data/Energy_Core_Position_Estimate.v8p05_plus_real20260408.offlineaug_augmax_v5_colordiff_realval_v1.yolov8
+  clean_output: true
+
+runtime:
+  seed: 52
+  num_aug_per_image: 20
+  keep_original_train: true
+  image_suffix: .jpg
+  label_suffix: .txt
+  max_attempts_per_augment: 20
+
+geometry:
+  border_mode: reflect101
+  rotate:
+    enabled: true
+    prob: 0.8
+    range_deg: [-24.0, 24.0]
+  scale:
+    enabled: true
+    prob: 0.45
+    range: [0.92, 1.12]
+  translate:
+    enabled: true
+    prob: 0.8
+    x_range_ratio: [-0.08, 0.08]
+    y_range_ratio: [-0.06, 0.06]
+  shear:
+    enabled: true
+    prob: 0.25
+    range_deg: [-3.0, 3.0]
+  perspective:
+    enabled: true
+    prob: 0.12
+    strength_range: [0.002, 0.012]
+  bbox_crop:
+    enabled: true
+    prob: 0.25
+    scale_range: [0.9, 0.98]
+    jitter_x_bbox_ratio: 0.1
+    jitter_y_bbox_ratio: 0.08
+  object_scale:
+    enabled: true
+    prob: 1.0
+    context_scale_range: [1.1, 1.45]
+    resize_scale_range: [0.75, 1.3]
+    center_jitter_ratio: 0.16
+    exclusion_margin_ratio: 0.12
+    feather_px: 16
+    min_source_context_px: 96
+
+appearance:
+  brightness_contrast:
+    enabled: true
+    prob: 0.8
+    brightness_range: [-32.0, 32.0]
+    contrast_range: [0.8, 1.22]
+  gamma:
+    enabled: true
+    prob: 0.7
+    range: [0.72, 1.32]
+  hsv:
+    enabled: true
+    prob: 0.65
+    hue_range: [-35.0, 35.0]
+    sat_range: [0.35, 1.9]
+    val_range: [0.7, 1.35]
+  rgb_shift:
+    enabled: true
+    prob: 0.6
+    shift_range: [-64.0, 64.0]
+  dominant_channel:
+    enabled: true
+    prob: 0.55
+    dominant_gain_range: [1.2, 2.1]
+    other_gain_range: [0.25, 0.95]
+    bias_range: [-20.0, 20.0]
+  channel_shuffle:
+    enabled: true
+    prob: 0.25
+  blur:
+    enabled: true
+    prob: 0.35
+    kernel_choices: [3, 5, 7]
+  motion_blur:
+    enabled: true
+    prob: 0.25
+    kernel_choices: [3, 5, 7]
+  noise:
+    enabled: true
+    prob: 0.45
+    std_range: [2.0, 14.0]
+  jpeg:
+    enabled: true
+    prob: 0.3
+    quality_range: [45, 95]
+  clahe:
+    enabled: true
+    prob: 0.3
+    clip_limit_range: [1.5, 3.0]
+    tile_grid_choices: [6, 8, 10]
+  channel_gain:
+    enabled: true
+    prob: 0.7
+    range: [0.45, 1.9]
+  shadow:
+    enabled: true
+    prob: 0.22
+    darkness_range: [0.22, 0.5]
+    major_axis_ratio: [0.18, 0.42]
+    minor_axis_ratio: [0.12, 0.3]
+    blur_kernel_choices: [31, 51, 71]
+
+occlusion:
+  cutout:
+    enabled: true
+    prob: 0.3
+    count_range: [1, 3]
+    size_ratio_range: [0.08, 0.18]
+    fill_mode: local_patch
+  edge_cutout:
+    enabled: true
+    prob: 0.22
+    count_range: [1, 2]
+    thickness_ratio_range: [0.05, 0.12]
+    length_ratio_range: [0.2, 0.55]
+    fill_mode: mean
+  corner_cutout:
+    enabled: true
+    prob: 0.15
+    size_ratio_range: [0.1, 0.2]
+    fill_mode: random
+
+filter:
+  min_bbox_area_ratio: 0.002
+  min_visible_keypoints_floor: 18
+  min_visible_keypoints_ratio: 0.72
+  min_bbox_width_px: 20
+  min_bbox_height_px: 20
+  max_out_of_frame_ratio: 0.45
+  max_out_of_frame_ratio_aggressive: 0.35
+
+review:
+  enabled: true
+  per_template: 24
+  export_dir: analysis/review
+
+templates:
+  geom_light:
+    weight: 0.8
+    geometry: [rotate, scale, translate, bbox_crop]
+    appearance: [brightness_contrast, gamma]
+    occlusion: []
+  geom_view:
+    weight: 0.7
+    geometry: [rotate, scale, translate, shear, perspective, bbox_crop]
+    appearance: [brightness_contrast, hsv]
+    occlusion: []
+  color_dom_soft:
+    weight: 1.1
+    geometry: [scale, translate]
+    appearance: [brightness_contrast, gamma, hsv, channel_gain, rgb_shift]
+    occlusion: []
+  color_dom_hard:
+    weight: 1.1
+    geometry: [scale, translate]
+    appearance: [hsv, channel_gain, rgb_shift, dominant_channel, channel_shuffle, jpeg]
+    occlusion: []
+  lighting_hard:
+    weight: 0.7
+    geometry: []
+    appearance: [brightness_contrast, gamma, shadow, blur, motion_blur, clahe, jpeg]
+    occlusion: []
+  occlusion_soft:
+    weight: 0.7
+    geometry: [rotate, scale, translate]
+    appearance: [brightness_contrast, hsv, noise]
+    occlusion: [cutout, edge_cutout]
+  occlusion_hard:
+    weight: 0.6
+    geometry: [rotate, translate, bbox_crop]
+    appearance: [gamma, blur, motion_blur, shadow, jpeg]
+    occlusion: [cutout, corner_cutout]
+  object_zoom_out:
+    weight: 1.0
+    geometry: [object_scale, rotate, translate]
+    object_scale:
+      context_scale_range: [1.15, 1.45]
+      resize_scale_range: [0.6, 0.88]
+      center_jitter_ratio: 0.12
+    appearance: [brightness_contrast, gamma, dominant_channel]
+    occlusion: []
+  object_zoom_in:
+    weight: 1.0
+    geometry: [object_scale, rotate, translate]
+    object_scale:
+      context_scale_range: [1.02, 1.18]
+      resize_scale_range: [1.12, 1.4]
+      center_jitter_ratio: 0.1
+    appearance: [brightness_contrast, hsv, channel_gain, rgb_shift]
+    occlusion: []

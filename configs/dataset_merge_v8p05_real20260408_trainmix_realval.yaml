@@ -1,0 +1,26 @@
+output:
+  root: data/Energy_Core_Position_Estimate.v8p05_plus_real20260408_trainmix_realval_v1.yolov8
+
+inputs:
+  - name: real
+    root: data/real_20260408T075927Z.resplit_rand811_v1.yolov8
+    ratios:
+      train: 1.0
+      valid: 1.0
+      test: 1.0
+  - name: v8
+    root: data/Energy_Core_Position_Estimate.v8-add-blue-real-marker.yolov8
+    ratios:
+      train: 0.05
+      valid: 0.0
+      test: 0.0
+
+sampling:
+  seed: 52
+
+merge:
+  rename_mode: prefix_input_name
+
+postprocess:
+  scale_balance:
+    enabled: false
