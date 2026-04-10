@@ -8,6 +8,12 @@ This project packages the local Energy Core pose datasets into a reproducible YO
 - Optional Weights & Biases cloud logging
 - Smoke-test friendly defaults for CPU-only environments
 
+Detailed workflow documentation for the current area-balance + transfer
+pipeline:
+
+- Chinese: `docs/yolo11s_gray_areabalance_usage_zh.md`
+- English: `docs/yolo11s_gray_areabalance_usage_en.md`
+
 ## Repository policy
 
 - Source code, configs, and lightweight dataset metadata are versioned.
@@ -43,6 +49,25 @@ set +a
 export WANDB_API_KEY="${WANDB_API_KEY:-$wandb_api_key}"
 conda run -n tech_core_yolo wandb login "$WANDB_API_KEY"
 ```
+
+Training can optionally route W&B traffic through a local proxy. Configure it in
+the training YAML:
+
+```yaml
+wandb:
+  enabled: true
+  proxy:
+    enabled: true
+    url: http://127.0.0.1:10080
+    no_proxy:
+      - 127.0.0.1
+      - localhost
+```
+
+When enabled, `train_pose.py` exports `HTTP_PROXY`, `HTTPS_PROXY`,
+`http_proxy`, `https_proxy`, `NO_PROXY`, and `no_proxy` before importing W&B.
+Earlier experiment notes mentioned the `127.0.0.1:10080` proxy, but the
+training script did not actually wire the proxy through until now.
 
 ## Training usage
 

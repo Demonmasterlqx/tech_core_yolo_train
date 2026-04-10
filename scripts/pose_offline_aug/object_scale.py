@@ -91,10 +91,14 @@ def select_same_image_background_patch(
     bbox: BBox,
     *,
     exclusion_margin_ratio: float,
+    output_width: int | None = None,
+    output_height: int | None = None,
     rng: random.Random,
 ) -> tuple[np.ndarray, tuple[int, int, int, int]] | None:
     image_height, image_width = image.shape[:2]
-    aspect_ratio = image_width / float(image_height)
+    target_width = int(output_width) if output_width is not None else image_width
+    target_height = int(output_height) if output_height is not None else image_height
+    aspect_ratio = target_width / float(target_height)
     fx1, fy1, fx2, fy2 = padded_bbox_rect(
         bbox,
         exclusion_margin_ratio=exclusion_margin_ratio,
@@ -130,8 +134,68 @@ def select_same_image_background_patch(
     _, rect = rng.choice(candidates[: min(4, len(candidates))])
     crop_x1, crop_y1, crop_x2, crop_y2 = rect
     crop = image[crop_y1:crop_y2, crop_x1:crop_x2]
-    resized = cv2.resize(crop, (image_width, image_height), interpolation=cv2.INTER_LINEAR)
+    resized = cv2.resize(crop, (target_width, target_height), interpolation=cv2.INTER_LINEAR)
     return resized, rect
+
+
+def fallback_background_canvas(
+    image: np.ndarray,
+    *,
+    output_width: int | None = None,
+    output_height: int | None = None,
+) -> np.ndarray:
+    image_height, image_width = image.shape[:2]
+    target_width = int(output_width) if output_width is not None else image_width
+    target_height = int(output_height) if output_height is not None else image_height
+    resized = cv2.resize(image, (target_width, target_height), interpolation=cv2.INTER_LINEAR)
+    return cv2.GaussianBlur(resized, (0, 0), sigmaX=12.0, sigmaY=12.0, borderType=cv2.BORDER_REFLECT_101)
+
+
+def input_max_side_px(
+    bbox_width_px: float,
+    bbox_height_px: float,
+    image_width: int,
+    image_height: int,
+    input_size_px: float,
+) -> float:
+    scale_to_input = min(float(input_size_px) / image_width, float(input_size_px) / image_height)
+    return max(bbox_width_px, bbox_height_px) * scale_to_input
+
+
+def input_area_ratio(
+    bbox_width_px: float,
+    bbox_height_px: float,
+    image_width: int,
+    image_height: int,
+    input_size_px: float,
+) -> float:
+    scale_to_input = min(float(input_size_px) / image_width, float(input_size_px) / image_height)
+    input_area = float(input_size_px) * float(input_size_px)
+    if input_area <= 0.0:
+        raise ValueError("input_size_px must be positive.")
+    return max(0.0, bbox_width_px) * max(0.0, bbox_height_px) * (scale_to_input**2) / input_area
+
+
+def resize_scale_for_target_input_area_ratio(
+    bbox_width_px: float,
+    bbox_height_px: float,
+    image_width: int,
+    image_height: int,
+    input_size_px: float,
+    target_area_ratio: float,
+) -> float:
+    current_ratio = input_area_ratio(
+        bbox_width_px=bbox_width_px,
+        bbox_height_px=bbox_height_px,
+        image_width=image_width,
+        image_height=image_height,
+        input_size_px=input_size_px,
+    )
+    if current_ratio <= 0.0:
+        raise ValueError("source_bbox_area_ratio_non_positive")
+    if target_area_ratio <= 0.0:
+        raise ValueError("target_area_ratio_must_be_positive")
+    return math.sqrt(float(target_area_ratio) / current_ratio)
 
 
 def visible_keypoints_in_bounds(annotation: ObjectAnnotation, image_width: int, image_height: int) -> bool:
@@ -193,8 +257,13 @@ def apply_same_image_object_scale(
         rng=rng,
     )
     if background is None:
-        raise ValueError("object_scale_no_valid_background_patch")
-    background_canvas, background_rect = background
+        if bool(op_cfg.get("allow_image_blur_background_fallback", True)):
+            background_canvas = fallback_background_canvas(image)
+            background_rect = (0, 0, image_width, image_height)
+        else:
+            raise ValueError("object_scale_no_valid_background_patch")
+    else:
+        background_canvas, background_rect = background
 
     interpolation = cv2.INTER_AREA if resize_scale <= 1.0 else cv2.INTER_LINEAR
     resized_roi = cv2.resize(roi, (resized_width, resized_height), interpolation=interpolation)
@@ -252,6 +321,361 @@ def apply_same_image_object_scale(
         "object_scale_applied": True,
         "context_scale": context_scale,
         "resize_scale": resize_scale,
+        "paste_x": paste_x,
+        "paste_y": paste_y,
+        "source_crop_rect": {
+            "x1": crop_x1,
+            "y1": crop_y1,
+            "x2": crop_x2,
+            "y2": crop_y2,
+        },
+        "background_rect": {
+            "x1": background_rect[0],
+            "y1": background_rect[1],
+            "x2": background_rect[2],
+            "y2": background_rect[3],
+        },
+    }
+    return transformed_image, transformed_annotation, meta
+
+
+def apply_same_image_video_reframe(
+    image: np.ndarray,
+    annotation: ObjectAnnotation,
+    op_cfg: dict[str, Any],
+    rng: random.Random,
+) -> tuple[np.ndarray, ObjectAnnotation, dict[str, Any]]:
+    source_height, source_width = image.shape[:2]
+    output_width = int(op_cfg["output_width"])
+    output_height = int(op_cfg["output_height"])
+    bbox = annotation.bbox
+    bbox_center_x, bbox_center_y = bbox.center
+    context_lo, context_hi = op_cfg["context_scale_range"]
+    target_lo, target_hi = op_cfg["target_input_max_side_range"]
+    target_input_max_side = rng.uniform(float(target_lo), float(target_hi))
+    input_size_px = float(op_cfg.get("input_size_px", 960.0))
+    output_scale = min(input_size_px / output_width, input_size_px / output_height)
+    if output_scale <= 0.0:
+        raise ValueError("video_reframe_invalid_output_scale")
+    target_native_max_side = target_input_max_side / output_scale
+
+    source_bbox_max_side = max(bbox.width, bbox.height)
+    if source_bbox_max_side <= 0.0:
+        raise ValueError("video_reframe_source_bbox_non_positive")
+    resize_scale = target_native_max_side / source_bbox_max_side
+
+    context_scale = rng.uniform(float(context_lo), float(context_hi))
+    min_source_context_px = float(op_cfg.get("min_source_context_px", 32.0))
+    crop_width = max(min_source_context_px, bbox.width * context_scale)
+    crop_height = max(min_source_context_px, bbox.height * context_scale)
+    crop_x1, crop_y1, crop_x2, crop_y2 = clip_rect(
+        bbox_center_x - crop_width / 2.0,
+        bbox_center_y - crop_height / 2.0,
+        bbox_center_x + crop_width / 2.0,
+        bbox_center_y + crop_height / 2.0,
+        source_width,
+        source_height,
+    )
+    roi = image[crop_y1:crop_y2, crop_x1:crop_x2]
+    roi_height, roi_width = roi.shape[:2]
+    if roi_width < 2 or roi_height < 2:
+        raise ValueError("video_reframe_source_roi_too_small")
+
+    max_fit_scale = min((output_width - 2.0) / roi_width, (output_height - 2.0) / roi_height)
+    if max_fit_scale <= 0.0:
+        raise ValueError("video_reframe_no_fit_scale")
+    if resize_scale > max_fit_scale:
+        resize_scale = max_fit_scale * 0.98
+    if resize_scale <= 0.0:
+        raise ValueError("video_reframe_non_positive_resize_scale")
+
+    resized_width = max(2, int(round(roi_width * resize_scale)))
+    resized_height = max(2, int(round(roi_height * resize_scale)))
+    if resized_width >= output_width or resized_height >= output_height:
+        raise ValueError("video_reframe_resized_roi_does_not_fit_canvas")
+
+    background = select_same_image_background_patch(
+        image,
+        bbox,
+        exclusion_margin_ratio=float(op_cfg["exclusion_margin_ratio"]),
+        output_width=output_width,
+        output_height=output_height,
+        rng=rng,
+    )
+    if background is None:
+        if bool(op_cfg.get("allow_image_blur_background_fallback", True)):
+            background_canvas = fallback_background_canvas(image, output_width=output_width, output_height=output_height)
+            background_rect = (0, 0, output_width, output_height)
+        else:
+            raise ValueError("video_reframe_no_valid_background_patch")
+    else:
+        background_canvas, background_rect = background
+
+    interpolation = cv2.INTER_AREA if resize_scale <= 1.0 else cv2.INTER_LINEAR
+    resized_roi = cv2.resize(roi, (resized_width, resized_height), interpolation=interpolation)
+
+    local_bbox_center_x = bbox_center_x - crop_x1
+    local_bbox_center_y = bbox_center_y - crop_y1
+    desired_center_x = rng.uniform(float(op_cfg["center_x_range"][0]), float(op_cfg["center_x_range"][1])) * output_width
+    desired_center_y = rng.uniform(float(op_cfg["center_y_range"][0]), float(op_cfg["center_y_range"][1])) * output_height
+
+    paste_x = int(round(desired_center_x - local_bbox_center_x * resize_scale))
+    paste_y = int(round(desired_center_y - local_bbox_center_y * resize_scale))
+    paste_x = int(clamp(float(paste_x), 0.0, float(output_width - resized_width)))
+    paste_y = int(clamp(float(paste_y), 0.0, float(output_height - resized_height)))
+
+    feather_px = int(op_cfg.get("feather_px", 0))
+    alpha = build_feather_mask(resized_height, resized_width, feather_px)
+    canvas = background_canvas.astype(np.float32)
+    patch = resized_roi.astype(np.float32)
+    view = canvas[paste_y : paste_y + resized_height, paste_x : paste_x + resized_width]
+    view[:] = patch * alpha + view * (1.0 - alpha)
+    transformed_image = np.clip(canvas, 0, 255).astype(np.uint8)
+
+    transformed_center_x = local_bbox_center_x * resize_scale + paste_x
+    transformed_center_y = local_bbox_center_y * resize_scale + paste_y
+    transformed_width = bbox.width * resize_scale
+    transformed_height = bbox.height * resize_scale
+    transformed_bbox = BBox(
+        x1=transformed_center_x - transformed_width / 2.0,
+        y1=transformed_center_y - transformed_height / 2.0,
+        x2=transformed_center_x + transformed_width / 2.0,
+        y2=transformed_center_y + transformed_height / 2.0,
+    )
+    transformed_keypoints = [
+        Keypoint(
+            x=(keypoint.x - crop_x1) * resize_scale + paste_x if keypoint.v > 0 else 0.0,
+            y=(keypoint.y - crop_y1) * resize_scale + paste_y if keypoint.v > 0 else 0.0,
+            v=keypoint.v,
+        )
+        for keypoint in annotation.keypoints
+    ]
+    transformed_annotation = ObjectAnnotation(
+        class_id=annotation.class_id,
+        bbox=transformed_bbox,
+        keypoints=transformed_keypoints,
+    )
+
+    if transformed_bbox.x1 < 0.0 or transformed_bbox.y1 < 0.0 or transformed_bbox.x2 > output_width or transformed_bbox.y2 > output_height:
+        raise ValueError("video_reframe_bbox_out_of_frame")
+    if not visible_keypoints_in_bounds(transformed_annotation, image_width=output_width, image_height=output_height):
+        raise ValueError("video_reframe_visible_keypoint_out_of_frame")
+
+    actual_input_max_side = input_max_side_px(
+        transformed_width,
+        transformed_height,
+        output_width,
+        output_height,
+        input_size_px=input_size_px,
+    )
+    tolerance_px = float(op_cfg.get("target_tolerance_px", 2.0))
+    if actual_input_max_side < float(target_lo) - tolerance_px or actual_input_max_side > float(target_hi) + tolerance_px:
+        raise ValueError("video_reframe_target_input_miss")
+
+    meta = {
+        "video_reframe_applied": True,
+        "output_width": output_width,
+        "output_height": output_height,
+        "context_scale": context_scale,
+        "resize_scale": resize_scale,
+        "target_input_max_side_px": target_input_max_side,
+        "actual_input_max_side_px": actual_input_max_side,
+        "paste_x": paste_x,
+        "paste_y": paste_y,
+        "source_crop_rect": {
+            "x1": crop_x1,
+            "y1": crop_y1,
+            "x2": crop_x2,
+            "y2": crop_y2,
+        },
+        "background_rect": {
+            "x1": background_rect[0],
+            "y1": background_rect[1],
+            "x2": background_rect[2],
+            "y2": background_rect[3],
+        },
+    }
+    return transformed_image, transformed_annotation, meta
+
+
+def apply_same_image_object_scale_to_area_ratio(
+    image: np.ndarray,
+    annotation: ObjectAnnotation,
+    op_cfg: dict[str, Any],
+    target_area_ratio: float,
+    rng: random.Random,
+) -> tuple[np.ndarray, ObjectAnnotation, dict[str, Any]]:
+    working_cfg = dict(op_cfg)
+    input_size_px = float(working_cfg.get("input_size_px", 960.0))
+    resize_scale = resize_scale_for_target_input_area_ratio(
+        bbox_width_px=annotation.bbox.width,
+        bbox_height_px=annotation.bbox.height,
+        image_width=image.shape[1],
+        image_height=image.shape[0],
+        input_size_px=input_size_px,
+        target_area_ratio=target_area_ratio,
+    )
+    working_cfg["resize_scale_range"] = [resize_scale, resize_scale]
+    transformed_image, transformed_annotation, meta = apply_same_image_object_scale(
+        image,
+        annotation,
+        working_cfg,
+        rng,
+    )
+    actual_area_ratio = input_area_ratio(
+        bbox_width_px=transformed_annotation.bbox.width,
+        bbox_height_px=transformed_annotation.bbox.height,
+        image_width=transformed_image.shape[1],
+        image_height=transformed_image.shape[0],
+        input_size_px=input_size_px,
+    )
+    meta = dict(meta)
+    meta["target_input_area_ratio"] = target_area_ratio
+    meta["actual_input_area_ratio"] = actual_area_ratio
+    return transformed_image, transformed_annotation, meta
+
+
+def apply_same_image_video_reframe_to_area_ratio(
+    image: np.ndarray,
+    annotation: ObjectAnnotation,
+    op_cfg: dict[str, Any],
+    target_area_ratio: float,
+    rng: random.Random,
+) -> tuple[np.ndarray, ObjectAnnotation, dict[str, Any]]:
+    source_height, source_width = image.shape[:2]
+    output_width = int(op_cfg["output_width"])
+    output_height = int(op_cfg["output_height"])
+    bbox = annotation.bbox
+    bbox_center_x, bbox_center_y = bbox.center
+    context_lo, context_hi = op_cfg["context_scale_range"]
+    input_size_px = float(op_cfg.get("input_size_px", 960.0))
+    output_scale = min(input_size_px / output_width, input_size_px / output_height)
+    if output_scale <= 0.0:
+        raise ValueError("video_reframe_invalid_output_scale")
+    source_bbox_area = bbox.area
+    if source_bbox_area <= 0.0:
+        raise ValueError("video_reframe_source_bbox_non_positive")
+    if target_area_ratio <= 0.0:
+        raise ValueError("target_area_ratio_must_be_positive")
+    target_native_area = float(target_area_ratio) * (input_size_px**2) / (output_scale**2)
+    resize_scale = math.sqrt(target_native_area / source_bbox_area)
+
+    context_scale = rng.uniform(float(context_lo), float(context_hi))
+    min_source_context_px = float(op_cfg.get("min_source_context_px", 32.0))
+    crop_width = max(min_source_context_px, bbox.width * context_scale)
+    crop_height = max(min_source_context_px, bbox.height * context_scale)
+    crop_x1, crop_y1, crop_x2, crop_y2 = clip_rect(
+        bbox_center_x - crop_width / 2.0,
+        bbox_center_y - crop_height / 2.0,
+        bbox_center_x + crop_width / 2.0,
+        bbox_center_y + crop_height / 2.0,
+        source_width,
+        source_height,
+    )
+    roi = image[crop_y1:crop_y2, crop_x1:crop_x2]
+    roi_height, roi_width = roi.shape[:2]
+    if roi_width < 2 or roi_height < 2:
+        raise ValueError("video_reframe_source_roi_too_small")
+
+    max_fit_scale = min((output_width - 2.0) / roi_width, (output_height - 2.0) / roi_height)
+    if max_fit_scale <= 0.0:
+        raise ValueError("video_reframe_no_fit_scale")
+    if resize_scale > max_fit_scale:
+        resize_scale = max_fit_scale * 0.98
+    if resize_scale <= 0.0:
+        raise ValueError("video_reframe_non_positive_resize_scale")
+
+    resized_width = max(2, int(round(roi_width * resize_scale)))
+    resized_height = max(2, int(round(roi_height * resize_scale)))
+    if resized_width >= output_width or resized_height >= output_height:
+        raise ValueError("video_reframe_resized_roi_does_not_fit_canvas")
+
+    background = select_same_image_background_patch(
+        image,
+        bbox,
+        exclusion_margin_ratio=float(op_cfg["exclusion_margin_ratio"]),
+        output_width=output_width,
+        output_height=output_height,
+        rng=rng,
+    )
+    if background is None:
+        if bool(op_cfg.get("allow_image_blur_background_fallback", True)):
+            background_canvas = fallback_background_canvas(image, output_width=output_width, output_height=output_height)
+            background_rect = (0, 0, output_width, output_height)
+        else:
+            raise ValueError("video_reframe_no_valid_background_patch")
+    else:
+        background_canvas, background_rect = background
+
+    interpolation = cv2.INTER_AREA if resize_scale <= 1.0 else cv2.INTER_LINEAR
+    resized_roi = cv2.resize(roi, (resized_width, resized_height), interpolation=interpolation)
+
+    local_bbox_center_x = bbox_center_x - crop_x1
+    local_bbox_center_y = bbox_center_y - crop_y1
+    desired_center_x = rng.uniform(float(op_cfg["center_x_range"][0]), float(op_cfg["center_x_range"][1])) * output_width
+    desired_center_y = rng.uniform(float(op_cfg["center_y_range"][0]), float(op_cfg["center_y_range"][1])) * output_height
+
+    paste_x = int(round(desired_center_x - local_bbox_center_x * resize_scale))
+    paste_y = int(round(desired_center_y - local_bbox_center_y * resize_scale))
+    paste_x = int(clamp(float(paste_x), 0.0, float(output_width - resized_width)))
+    paste_y = int(clamp(float(paste_y), 0.0, float(output_height - resized_height)))
+
+    feather_px = int(op_cfg.get("feather_px", 0))
+    alpha = build_feather_mask(resized_height, resized_width, feather_px)
+    canvas = background_canvas.astype(np.float32)
+    patch = resized_roi.astype(np.float32)
+    view = canvas[paste_y : paste_y + resized_height, paste_x : paste_x + resized_width]
+    view[:] = patch * alpha + view * (1.0 - alpha)
+    transformed_image = np.clip(canvas, 0, 255).astype(np.uint8)
+
+    transformed_center_x = local_bbox_center_x * resize_scale + paste_x
+    transformed_center_y = local_bbox_center_y * resize_scale + paste_y
+    transformed_width = bbox.width * resize_scale
+    transformed_height = bbox.height * resize_scale
+    transformed_bbox = BBox(
+        x1=transformed_center_x - transformed_width / 2.0,
+        y1=transformed_center_y - transformed_height / 2.0,
+        x2=transformed_center_x + transformed_width / 2.0,
+        y2=transformed_center_y + transformed_height / 2.0,
+    )
+    transformed_keypoints = [
+        Keypoint(
+            x=(keypoint.x - crop_x1) * resize_scale + paste_x if keypoint.v > 0 else 0.0,
+            y=(keypoint.y - crop_y1) * resize_scale + paste_y if keypoint.v > 0 else 0.0,
+            v=keypoint.v,
+        )
+        for keypoint in annotation.keypoints
+    ]
+    transformed_annotation = ObjectAnnotation(
+        class_id=annotation.class_id,
+        bbox=transformed_bbox,
+        keypoints=transformed_keypoints,
+    )
+
+    if transformed_bbox.x1 < 0.0 or transformed_bbox.y1 < 0.0 or transformed_bbox.x2 > output_width or transformed_bbox.y2 > output_height:
+        raise ValueError("video_reframe_bbox_out_of_frame")
+    if not visible_keypoints_in_bounds(transformed_annotation, image_width=output_width, image_height=output_height):
+        raise ValueError("video_reframe_visible_keypoint_out_of_frame")
+
+    actual_area_ratio = input_area_ratio(
+        bbox_width_px=transformed_width,
+        bbox_height_px=transformed_height,
+        image_width=output_width,
+        image_height=output_height,
+        input_size_px=input_size_px,
+    )
+    tolerance_ratio = float(op_cfg.get("target_area_tolerance_ratio", 0.002))
+    if abs(actual_area_ratio - float(target_area_ratio)) > tolerance_ratio:
+        raise ValueError("video_reframe_target_area_miss")
+
+    meta = {
+        "video_reframe_applied": True,
+        "output_width": output_width,
+        "output_height": output_height,
+        "context_scale": context_scale,
+        "resize_scale": resize_scale,
+        "target_input_area_ratio": target_area_ratio,
+        "actual_input_area_ratio": actual_area_ratio,
         "paste_x": paste_x,
         "paste_y": paste_y,
         "source_crop_rect": {

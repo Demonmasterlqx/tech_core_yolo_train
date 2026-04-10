@@ -31,6 +31,38 @@ def adjust_hsv(image: np.ndarray, hue_delta: float, sat_scale: float, val_scale:
     return cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2BGR)
 
 
+def apply_temperature_tint(image: np.ndarray, temperature_shift: float, tint_shift: float) -> np.ndarray:
+    lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB).astype(np.float32)
+    lab[..., 1] = np.clip(lab[..., 1] + float(tint_shift), 0.0, 255.0)
+    lab[..., 2] = np.clip(lab[..., 2] + float(temperature_shift), 0.0, 255.0)
+    return cv2.cvtColor(lab.astype(np.uint8), cv2.COLOR_LAB2BGR)
+
+
+def apply_highlight_exposure(
+    image: np.ndarray,
+    gain: float,
+    threshold: int,
+    rolloff: float,
+) -> np.ndarray:
+    threshold = min(255, max(0, int(threshold)))
+    rolloff = max(1e-6, float(rolloff))
+    highlight = image.astype(np.float32)
+    luminance = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY).astype(np.float32)
+    alpha = np.clip((luminance - threshold) / rolloff, 0.0, 1.0)
+    boosted = highlight * float(gain)
+    mixed = highlight * (1.0 - alpha[..., None]) + boosted * alpha[..., None]
+    return np.clip(mixed, 0, 255).astype(np.uint8)
+
+
+def apply_unsharp_mask(image: np.ndarray, kernel_size: int, amount: float) -> np.ndarray:
+    kernel_size = normalize_kernel_size(kernel_size)
+    if kernel_size <= 1 or amount <= 0.0:
+        return image.copy()
+    blurred = cv2.GaussianBlur(image, (kernel_size, kernel_size), sigmaX=0.0)
+    sharpened = image.astype(np.float32) * (1.0 + float(amount)) - blurred.astype(np.float32) * float(amount)
+    return np.clip(sharpened, 0, 255).astype(np.uint8)
+
+
 def gaussian_blur(image: np.ndarray, kernel_size: int) -> np.ndarray:
     kernel_size = normalize_kernel_size(kernel_size)
     if kernel_size <= 1:

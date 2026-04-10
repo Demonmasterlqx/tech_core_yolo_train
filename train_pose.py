@@ -77,6 +77,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "checkpoint_policy": "live",
         "tags": ["pose", "energy-core"],
         "notes": "YOLO pose training for Energy Core Position Estimate on the v8 dataset.",
+        "proxy": {
+            "enabled": False,
+            "url": None,
+            "no_proxy": [],
+        },
     },
     "post_eval": {
         "enabled": True,
@@ -192,6 +197,51 @@ def inject_env_defaults() -> None:
         os.environ["WANDB_API_KEY"] = wandb_key
 
 
+def normalize_wandb_proxy_config(config: dict[str, Any]) -> None:
+    wandb_cfg = config.setdefault("wandb", {})
+    proxy_cfg = wandb_cfg.get("proxy")
+    if proxy_cfg is None:
+        wandb_cfg["proxy"] = {
+            "enabled": False,
+            "url": None,
+            "no_proxy": [],
+        }
+        return
+    if not isinstance(proxy_cfg, dict):
+        raise ValueError("wandb.proxy must be a mapping when provided.")
+
+    proxy_cfg.setdefault("enabled", False)
+    proxy_cfg.setdefault("url", None)
+    proxy_cfg.setdefault("no_proxy", [])
+
+    if isinstance(proxy_cfg["no_proxy"], str):
+        proxy_cfg["no_proxy"] = [proxy_cfg["no_proxy"]]
+    if not isinstance(proxy_cfg["no_proxy"], list) or not all(isinstance(item, str) for item in proxy_cfg["no_proxy"]):
+        raise ValueError("wandb.proxy.no_proxy must be a string or a list of strings.")
+    if proxy_cfg.get("enabled") and not proxy_cfg.get("url"):
+        raise ValueError("wandb.proxy.url must be set when wandb.proxy.enabled=true.")
+
+
+def apply_wandb_proxy_env(config: dict[str, Any]) -> None:
+    wandb_cfg = config.get("wandb", {})
+    proxy_cfg = wandb_cfg.get("proxy", {})
+    if not wandb_cfg.get("enabled", False) or not bool(proxy_cfg.get("enabled", False)):
+        return
+
+    proxy_url = str(proxy_cfg.get("url") or "").strip()
+    if not proxy_url:
+        raise ValueError("wandb.proxy.url must be set when wandb.proxy.enabled=true.")
+
+    no_proxy_items = [item.strip() for item in proxy_cfg.get("no_proxy", []) if item and item.strip()]
+    no_proxy_value = ",".join(no_proxy_items)
+    for key in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
+        os.environ[key] = proxy_url
+    if no_proxy_value:
+        os.environ["NO_PROXY"] = no_proxy_value
+        os.environ["no_proxy"] = no_proxy_value
+    print_info(f"Using W&B proxy: {proxy_url}")
+
+
 def normalize_config(args: argparse.Namespace) -> dict[str, Any]:
     config_path = resolve_existing_path(args.config, REPO_ROOT)
     if not config_path.exists():
@@ -252,6 +302,7 @@ def normalize_config(args: argparse.Namespace) -> dict[str, Any]:
     if init_mode not in {"scratch", "pretrained"}:
         raise ValueError("init_mode must be either 'scratch' or 'pretrained'.")
     config["init_mode"] = init_mode
+    normalize_wandb_proxy_config(config)
     validate_project_augment_rules(config)
     return config
 
@@ -399,6 +450,8 @@ def configure_wandb(config: dict[str, Any]):
         SETTINGS.update({"wandb": False})
         print_info("W&B disabled by configuration.")
         return None
+
+    apply_wandb_proxy_env(config)
 
     try:
         import wandb

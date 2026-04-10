@@ -1,0 +1,102 @@
+model: runs/pose/v9_yolo11_pose_gray_s26_realmix_areabalancex10_v1_from_official_e120/weights/best.pt
+data: data/real_20260409T113532Z.areabalance_videofit_x10_v1.yolov8/data.raw_eval.yaml
+device: auto
+project: runs/pose
+name: v9_yolo11_pose_gray_s27_real20260409_areabalancevideofitx10_from_s26_e180
+seed: 52
+init_mode: pretrained
+
+preprocess:
+  grayscale: true
+
+train:
+  epochs: 180
+  batch: 4
+  imgsz: 960
+  workers: 8
+  patience: 45
+  save: true
+  save_period: -1
+  cache: ram
+  plots: true
+  exist_ok: false
+  verbose: true
+  optimizer: AdamW
+  lr0: 8.0e-06
+  lrf: 0.2
+  momentum: 0.937
+  weight_decay: 0.0005
+  warmup_epochs: 1
+  warmup_momentum: 0.8
+  warmup_bias_lr: 0.1
+  box: 7.5
+  cls: 0.5
+  dfl: 1.5
+  pose: 36.0
+  kobj: 1.0
+  cos_lr: true
+  close_mosaic: 10
+  amp: false
+  deterministic: true
+  auto_augment: randaugment
+  erasing: 0.10
+
+augment:
+  hsv_h: 0.01
+  hsv_s: 0.15
+  hsv_v: 0.12
+  degrees: 2.5
+  translate: 0.04
+  scale: 0.06
+  shear: 1.0
+  perspective: 0.0003
+  flipud: 0.0
+  fliplr: 0.0
+  bgr: 0.0
+  mosaic: 0.15
+  mixup: 0.0
+  cutmix: 0.0
+  copy_paste: 0.0
+
+wandb:
+  enabled: true
+  project: tech-core-yolo-pose
+  entity: 183842220-hkust
+  group: yolo11-pose-gray-real20260409-areabalance
+  batch_log_interval: 50
+  upload_checkpoints: true
+  checkpoint_policy: live
+  tags:
+    - pose
+    - energy-core
+    - yolo11
+    - yolo11s
+    - gray
+    - real20260409
+    - areabalance
+    - videofit
+    - x10
+    - transfer
+    - from-s26
+    - proxy10080
+  notes: >
+    Transfer training from the v9 area-balanced base model onto the real
+    20260409 dataset after 10x inflation and explicit video-fit area balancing,
+    using the local 127.0.0.1:10080 proxy for W&B connectivity.
+  proxy:
+    enabled: true
+    url: http://127.0.0.1:10080
+    no_proxy:
+      - 127.0.0.1
+      - localhost
+
+post_eval:
+  enabled: true
+  project: runs/pose_test
+  splits:
+    - valid
+    - test
+  imgsz: 960
+  batch: 8
+  conf: 0.25
+  line_width: 2
