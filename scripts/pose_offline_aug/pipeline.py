@@ -9,7 +9,7 @@ import numpy as np
 from . import appearance, geometry, occlusion
 from .io import read_image_bgr
 from .labels import apply_geometry_to_annotation, count_visible_keypoints
-from .object_scale import apply_same_image_object_scale
+from .object_scale import apply_same_image_object_scale, apply_same_image_video_reframe
 from .structures import AugmentRecord, ImageAnnotation, ObjectAnnotation, OcclusionRegion
 from .validator import validate_augmented_sample
 
@@ -51,33 +51,57 @@ def choose_template(templates_cfg: dict[str, Any], rng: random.Random) -> tuple[
     return chosen, templates_cfg[chosen]
 
 
-def maybe_apply_object_scale(
+def maybe_apply_special_geometry(
     image: np.ndarray,
     annotation: ObjectAnnotation,
+    *,
+    image_width: int,
+    image_height: int,
     geometry_cfg: dict[str, Any],
     template_cfg: dict[str, Any],
     rng: random.Random,
-) -> tuple[np.ndarray, ObjectAnnotation, dict[str, Any]]:
+) -> tuple[np.ndarray, ObjectAnnotation, int, int, dict[str, Any]]:
     requested = set(template_cfg.get("geometry", []))
-    meta: dict[str, Any] = {"object_scale_applied": False}
-    if "object_scale" not in requested or not config_enabled("object_scale", geometry_cfg):
-        return image, annotation, meta
+    meta: dict[str, Any] = {
+        "object_scale_applied": False,
+        "video_reframe_applied": False,
+    }
+    current_image = image
+    current_annotation = annotation
+    current_width = int(image_width)
+    current_height = int(image_height)
 
-    op_cfg = dict(geometry_cfg["object_scale"])
-    template_override = template_cfg.get("object_scale")
-    if isinstance(template_override, dict):
-        op_cfg.update(template_override)
-    if rng.random() > float(op_cfg.get("prob", 1.0)):
-        return image, annotation, meta
+    if "video_reframe" in requested and config_enabled("video_reframe", geometry_cfg):
+        op_cfg = dict(geometry_cfg["video_reframe"])
+        template_override = template_cfg.get("video_reframe")
+        if isinstance(template_override, dict):
+            op_cfg.update(template_override)
+        if rng.random() <= float(op_cfg.get("prob", 1.0)):
+            current_image, current_annotation, stage_meta = apply_same_image_video_reframe(
+                current_image,
+                current_annotation,
+                op_cfg,
+                rng,
+            )
+            current_height, current_width = current_image.shape[:2]
+            meta.update(stage_meta)
 
-    scaled_image, scaled_annotation, object_scale_meta = apply_same_image_object_scale(
-        image,
-        annotation,
-        op_cfg,
-        rng,
-    )
-    meta.update(object_scale_meta)
-    return scaled_image, scaled_annotation, meta
+    if "object_scale" in requested and config_enabled("object_scale", geometry_cfg):
+        op_cfg = dict(geometry_cfg["object_scale"])
+        template_override = template_cfg.get("object_scale")
+        if isinstance(template_override, dict):
+            op_cfg.update(template_override)
+        if rng.random() <= float(op_cfg.get("prob", 1.0)):
+            current_image, current_annotation, stage_meta = apply_same_image_object_scale(
+                current_image,
+                current_annotation,
+                op_cfg,
+                rng,
+            )
+            current_height, current_width = current_image.shape[:2]
+            meta.update(stage_meta)
+
+    return current_image, current_annotation, current_width, current_height, meta
 
 
 def sample_geometry_matrix(
@@ -370,33 +394,35 @@ def generate_augmented_sample(
     template_name, template_cfg = choose_template(config["templates"], rng)
     image = read_image_bgr(annotation.image_path)
     try:
-        image_after_object_scale, annotation_after_object_scale, object_scale_meta = maybe_apply_object_scale(
+        special_image, special_annotation, special_width, special_height, special_geometry_meta = maybe_apply_special_geometry(
             image,
             annotation.object_annotation,
-            config["geometry"],
-            template_cfg,
-            rng,
+            image_width=annotation.image_width,
+            image_height=annotation.image_height,
+            geometry_cfg=config["geometry"],
+            template_cfg=template_cfg,
+            rng=rng,
         )
         working_annotation = ImageAnnotation(
             sample_id=annotation.sample_id,
             split=annotation.split,
             image_path=annotation.image_path,
             label_path=annotation.label_path,
-            image_width=annotation.image_width,
-            image_height=annotation.image_height,
-            object_annotation=annotation_after_object_scale,
+            image_width=special_width,
+            image_height=special_height,
+            object_annotation=special_annotation,
         )
         matrix, geometry_meta = sample_geometry_matrix(working_annotation, config["geometry"], template_cfg, rng)
         warped_image, valid_mask = geometry.warp_image_and_mask(
-            image_after_object_scale,
+            special_image,
             matrix,
             border_mode=str(config["geometry"].get("border_mode", "reflect101")),
         )
         transformed_annotation, raw_bbox = apply_geometry_to_annotation(
-            annotation_after_object_scale,
+            special_annotation,
             matrix,
-            image_width=annotation.image_width,
-            image_height=annotation.image_height,
+            image_width=special_width,
+            image_height=special_height,
             valid_mask=valid_mask,
             occlusion_regions=[],
         )
@@ -415,19 +441,19 @@ def generate_augmented_sample(
             rng,
         )
         final_annotation, raw_bbox_after_occlusion = apply_geometry_to_annotation(
-            annotation_after_object_scale,
+            special_annotation,
             matrix,
-            image_width=annotation.image_width,
-            image_height=annotation.image_height,
+            image_width=special_width,
+            image_height=special_height,
             valid_mask=valid_mask,
             occlusion_regions=occlusion_regions,
         )
         metrics, reject_reason = validate_augmented_sample(
             final_annotation,
             raw_bbox_after_occlusion,
-            image_width=annotation.image_width,
-            image_height=annotation.image_height,
-            source_visible_keypoints=count_visible_keypoints(annotation_after_object_scale.keypoints),
+            image_width=special_width,
+            image_height=special_height,
+            source_visible_keypoints=count_visible_keypoints(special_annotation.keypoints),
             filter_cfg=config["filter"],
             aggressive_geometry_used=(
                 "perspective_strength" in geometry_meta
@@ -435,7 +461,7 @@ def generate_augmented_sample(
                 or "crop_scale" in geometry_meta
             ),
         )
-        geometry_meta = dict(object_scale_meta) | geometry_meta
+        geometry_meta = dict(special_geometry_meta) | geometry_meta
         transforms = {
             "template": template_name,
             "geometry": geometry_meta,

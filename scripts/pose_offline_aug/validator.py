@@ -18,11 +18,14 @@ def validate_augmented_sample(
 ) -> tuple[SampleMetrics, str | None]:
     bbox = annotation.bbox
     if bbox.width <= 0.0 or bbox.height <= 0.0:
-        return SampleMetrics(0, bbox.width, bbox.height, 0.0, 1.0), "bbox_non_positive"
+        return SampleMetrics(0, bbox.width, bbox.height, 0.0, 1.0, 0.0), "bbox_non_positive"
 
     bbox_area_ratio = bbox.area / float(image_width * image_height)
     visible_keypoints = count_visible_keypoints(annotation.keypoints)
     out_ratio = bbox_out_of_frame_ratio(raw_bbox, bbox)
+    analysis_imgsz = float(filter_cfg.get("analysis_imgsz", 960.0))
+    scale_to_input = min(analysis_imgsz / image_width, analysis_imgsz / image_height)
+    bbox_max_side_input_px = max(bbox.width, bbox.height) * scale_to_input
 
     metrics = SampleMetrics(
         visible_keypoints=visible_keypoints,
@@ -30,6 +33,7 @@ def validate_augmented_sample(
         bbox_height_px=bbox.height,
         bbox_area_ratio=bbox_area_ratio,
         out_of_frame_ratio=out_ratio,
+        bbox_max_side_input_px=bbox_max_side_input_px,
     )
 
     if bbox.width < float(filter_cfg["min_bbox_width_px"]):

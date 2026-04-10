@@ -74,6 +74,7 @@ class SampleMetrics:
     bbox_height_px: float
     bbox_area_ratio: float
     out_of_frame_ratio: float
+    bbox_max_side_input_px: float = 0.0
 
 
 @dataclass
@@ -114,6 +115,7 @@ class AugmentRecord:
                 "bbox_height_px": self.metrics.bbox_height_px,
                 "bbox_area_ratio": self.metrics.bbox_area_ratio,
                 "out_of_frame_ratio": self.metrics.out_of_frame_ratio,
+                "bbox_max_side_input_px": self.metrics.bbox_max_side_input_px,
             }
         return payload
 
@@ -140,7 +142,7 @@ class AugmentRecord:
                     "bbox_height_px": self.metrics.bbox_height_px,
                     "bbox_area_ratio": self.metrics.bbox_area_ratio,
                     "out_of_frame_ratio": self.metrics.out_of_frame_ratio,
+                    "bbox_max_side_input_px": self.metrics.bbox_max_side_input_px,
                 }
             )
         return row
-
